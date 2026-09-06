@@ -1,38 +1,36 @@
 #include "MallBuilder.h"
 #include "PossessablePawn.h"
 #include "ParasiteNPC.h"
-#include "PossessableComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/SceneComponent.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/SkyLightComponent.h"
-#include "Components/SceneComponent.h"
 #include "Materials/Material.h"
-#include "Engine/StaticMesh.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/World.h"
 #include "UObject/ConstructorHelpers.h"
 #include "EngineUtils.h"
-#include "Engine/World.h"
 
 // ---------------------------------------------------------------------------
-// Mall dimensions. Roughly 200 m x 200 m over two floors.
-// Team A lives west (-X), Team B east (+X).
+// Layout. Team A lives west (-X), team B east (+X).
 // ---------------------------------------------------------------------------
 namespace MallLayout
 {
-	static constexpr float Half			= 10000.f;	// 100 m to each side
+	static constexpr float Half			= 10000.f;		// 100 m each way
 	static constexpr float WallHeight	= 1400.f;
-	static constexpr float FloorZ		= 0.f;
 	static constexpr float UpperZ		= 700.f;
 	static constexpr float WallThick	= 40.f;
 
 	static const FLinearColor ColFloor		= FLinearColor(0.32f, 0.30f, 0.28f);
 	static const FLinearColor ColWall		= FLinearColor(0.55f, 0.53f, 0.48f);
-	static const FLinearColor ColShop		= FLinearColor(0.45f, 0.42f, 0.50f);
 	static const FLinearColor ColAccent		= FLinearColor(0.20f, 0.55f, 0.60f);
 	static const FLinearColor ColSign		= FLinearColor(0.95f, 0.30f, 0.45f);
 	static const FLinearColor ColMetal		= FLinearColor(0.40f, 0.42f, 0.45f);
 	static const FLinearColor ColPlanter	= FLinearColor(0.25f, 0.18f, 0.14f);
 }
+
+using namespace MallLayout;
 
 // ---------------------------------------------------------------------------
 // AMallBlock
@@ -50,7 +48,6 @@ AMallBlock::AMallBlock()
 	Mesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Mesh"));
 	SetRootComponent(Mesh);
 	Mesh->SetMobility(EComponentMobility::Movable);
-	Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
 	Mesh->SetCollisionProfileName(TEXT("BlockAll"));
 	if (CubeMesh.Succeeded())
 	{
@@ -103,11 +100,11 @@ AMallLighting::AMallLighting()
 	Sky->SetMobility(EComponentMobility::Movable);
 	Sky->SourceType = ESkyLightSourceType::SLS_CapturedScene;
 	Sky->bRealTimeCapture = true;
+	Sky->bLowerHemisphereIsBlack = false;
 	Sky->SetIntensity(1.2f);
 	Sky->SetLightColor(FLinearColor(0.55f, 0.6f, 0.75f));
-	Sky->bLowerHemisphereIsBlack = false;
 
-	// A cheap fill light so nothing is ever pitch black, whatever the sky does.
+	// A cheap fill so nothing is ever pitch black, whatever the sky capture does.
 	Fill = CreateDefaultSubobject<UDirectionalLightComponent>(TEXT("Fill"));
 	Fill->SetupAttachment(Root);
 	Fill->SetMobility(EComponentMobility::Movable);
@@ -181,8 +178,6 @@ void AMallElevator::Tick(float DeltaSeconds)
 
 namespace
 {
-	using namespace MallLayout;
-
 	AMallBlock* Block(UWorld* World, const FVector& Centre, const FVector& Extent, const FLinearColor& Colour,
 		float Yaw = 0.f, float Pitch = 0.f, bool bSphere = false)
 	{
@@ -196,41 +191,37 @@ namespace
 		return NewBlock;
 	}
 
-	/** Three walls and a sign: one shop unit facing into the atrium. */
+	/** Three walls, a floor tint and a fascia sign: one shop unit. */
 	void BuildShop(UWorld* World, const FVector& Centre, float Width, float Depth, float FacingYaw, const FLinearColor& Colour)
 	{
-		const FRotationMatrix Rot(FRotator(0.f, FacingYaw, 0.f));
-		const FVector Fwd = Rot.GetUnitAxis(EAxis::X);		// points into the atrium
-		const FVector Side = Rot.GetUnitAxis(EAxis::Y);
+		const FRotationMatrix Rotation(FRotator(0.f, FacingYaw, 0.f));
+		const FVector Forward = Rotation.GetUnitAxis(EAxis::X);		// points into the atrium
+		const FVector Side = Rotation.GetUnitAxis(EAxis::Y);
 
 		const float HalfW = Width * 0.5f;
 		const float HalfD = Depth * 0.5f;
 		const FVector Up(0.f, 0.f, WallHeight * 0.5f);
 
-		// Back wall.
-		Block(World, Centre - Fwd * HalfD + Up, FVector(WallThick, HalfW, WallHeight * 0.5f), Colour, FacingYaw);
-		// Side walls.
+		Block(World, Centre - Forward * HalfD + Up, FVector(WallThick, HalfW, WallHeight * 0.5f), Colour, FacingYaw);
 		Block(World, Centre + Side * HalfW + Up, FVector(HalfD, WallThick, WallHeight * 0.5f), Colour, FacingYaw);
 		Block(World, Centre - Side * HalfW + Up, FVector(HalfD, WallThick, WallHeight * 0.5f), Colour, FacingYaw);
-		// Shop floor tint + fascia sign above the open front.
 		Block(World, Centre + FVector(0.f, 0.f, 6.f), FVector(HalfD, HalfW, 6.f), Colour * 0.7f, FacingYaw);
-		Block(World, Centre + Fwd * HalfD + FVector(0.f, 0.f, WallHeight - 120.f),
+		Block(World, Centre + Forward * HalfD + FVector(0.f, 0.f, WallHeight - 120.f),
 			FVector(30.f, HalfW * 0.8f, 120.f), ColSign, FacingYaw);
 	}
 
-	/** A ramp standing in for an escalator/staircase. */
+	/** A ramp standing in for a dead escalator. */
 	void BuildStairs(UWorld* World, const FVector& Bottom, float Yaw)
 	{
 		const float Run = 1600.f;
 		const float Rise = UpperZ;
 		const float Pitch = -FMath::RadiansToDegrees(FMath::Atan2(Rise, Run));
-		const FVector Mid = Bottom + FRotationMatrix(FRotator(0.f, Yaw, 0.f)).GetUnitAxis(EAxis::X) * (Run * 0.5f)
-			+ FVector(0.f, 0.f, Rise * 0.5f);
-		const float Length = FMath::Sqrt(Run * Run + Rise * Rise) * 0.5f;
-		Block(World, Mid, FVector(Length, 260.f, 25.f), ColMetal, Yaw, Pitch);
-		// Landing at the top.
-		Block(World, Bottom + FRotationMatrix(FRotator(0.f, Yaw, 0.f)).GetUnitAxis(EAxis::X) * (Run + 300.f)
-			+ FVector(0.f, 0.f, Rise), FVector(300.f, 300.f, 25.f), ColMetal, Yaw);
+		const FVector Forward = FRotationMatrix(FRotator(0.f, Yaw, 0.f)).GetUnitAxis(EAxis::X);
+
+		Block(World, Bottom + Forward * (Run * 0.5f) + FVector(0.f, 0.f, Rise * 0.5f),
+			FVector(FMath::Sqrt(Run * Run + Rise * Rise) * 0.5f, 260.f, 25.f), ColMetal, Yaw, Pitch);
+		Block(World, Bottom + Forward * (Run + 300.f) + FVector(0.f, 0.f, Rise),
+			FVector(300.f, 300.f, 25.f), ColMetal, Yaw);
 	}
 
 	APossessablePawn* SpawnProp(UWorld* World, const FVector& Location, float Yaw, const FString& Name,
@@ -248,11 +239,12 @@ namespace
 		return Prop;
 	}
 
-	void SpawnShopper(UWorld* World, const FVector& Start, const TArray<FVector>& Route, const FLinearColor& Colour)
+	void SpawnShopper(UWorld* World, const TArray<FVector>& Route, const FLinearColor& Colour)
 	{
 		FActorSpawnParameters Params;
 		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
-		if (AParasiteNPC* NPC = World->SpawnActor<AParasiteNPC>(AParasiteNPC::StaticClass(), Start + FVector(0.f, 0.f, 95.f), FRotator::ZeroRotator, Params))
+		if (AParasiteNPC* NPC = World->SpawnActor<AParasiteNPC>(AParasiteNPC::StaticClass(),
+			Route[0] + FVector(0.f, 0.f, 95.f), FRotator::ZeroRotator, Params))
 		{
 			NPC->Waypoints = Route;
 			NPC->ShirtColour = Colour;
@@ -271,27 +263,25 @@ void UMallBuilder::BuildStaticGeometry(UWorld* World)
 	{
 		return;
 	}
-	// Idempotent: never build the mall twice into one world.
+	// Never build the mall twice into one world.
 	for (TActorIterator<AMallBlock> It(World); It; ++It)
 	{
 		return;
 	}
 
-	// --- Lighting ---------------------------------------------------------
-	FActorSpawnParameters LightParams;
-	LightParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	World->SpawnActor<AMallLighting>(AMallLighting::StaticClass(), FVector(0.f, 0.f, 2000.f), FRotator::ZeroRotator, Params);
 
-	World->SpawnActor<AMallLighting>(AMallLighting::StaticClass(), FVector(0.f, 0.f, 2000.f), FRotator::ZeroRotator, LightParams);
-
-	// --- Shell ------------------------------------------------------------
-	Block(World, FVector(0.f, 0.f, -50.f), FVector(Half, Half, 50.f), ColFloor);							// ground
-	Block(World, FVector(0.f, 0.f, WallHeight * 2.f), FVector(Half, Half, 40.f), ColWall * 0.6f);			// roof
+	// --- Shell -----------------------------------------------------------
+	Block(World, FVector(0.f, 0.f, -50.f), FVector(Half, Half, 50.f), ColFloor);
+	Block(World, FVector(0.f, 0.f, WallHeight * 2.f), FVector(Half, Half, 40.f), ColWall * 0.6f);
 	Block(World, FVector(Half, 0.f, WallHeight), FVector(WallThick, Half, WallHeight), ColWall);
 	Block(World, FVector(-Half, 0.f, WallHeight), FVector(WallThick, Half, WallHeight), ColWall);
 	Block(World, FVector(0.f, Half, WallHeight), FVector(Half, WallThick, WallHeight), ColWall);
 	Block(World, FVector(0.f, -Half, WallHeight), FVector(Half, WallThick, WallHeight), ColWall);
 
-	// --- Upper floor: a ring around the open atrium -----------------------
+	// --- Upper floor: a ring around the open atrium ----------------------
 	const float RingOuter = 8000.f;
 	const float RingInner = 3600.f;
 	const float RingWidth = (RingOuter - RingInner) * 0.5f;
@@ -300,7 +290,6 @@ void UMallBuilder::BuildStaticGeometry(UWorld* World)
 	Block(World, FVector(-RingMid, 0.f, UpperZ), FVector(RingWidth, RingOuter, 25.f), ColFloor * 1.1f);
 	Block(World, FVector(0.f, RingMid, UpperZ), FVector(RingInner, RingWidth, 25.f), ColFloor * 1.1f);
 	Block(World, FVector(0.f, -RingMid, UpperZ), FVector(RingInner, RingWidth, 25.f), ColFloor * 1.1f);
-	// Balustrades around the void.
 	Block(World, FVector(RingInner, 0.f, UpperZ + 90.f), FVector(20.f, RingInner, 90.f), ColAccent);
 	Block(World, FVector(-RingInner, 0.f, UpperZ + 90.f), FVector(20.f, RingInner, 90.f), ColAccent);
 	Block(World, FVector(0.f, RingInner, UpperZ + 90.f), FVector(RingInner, 20.f, 90.f), ColAccent);
@@ -310,7 +299,7 @@ void UMallBuilder::BuildStaticGeometry(UWorld* World)
 	Block(World, FVector(0.f, 0.f, 40.f), FVector(600.f, 600.f, 40.f), ColAccent * 0.8f);
 	Block(World, FVector(0.f, 0.f, 160.f), FVector(180.f, 180.f, 160.f), ColAccent, 0.f, 0.f, true);
 
-	// --- Eight shop units around the atrium -------------------------------
+	// --- Eight shop units --------------------------------------------------
 	BuildShop(World, FVector(6200.f, -5200.f, 0.f), 2600.f, 2400.f, 180.f, FLinearColor(0.50f, 0.34f, 0.30f));
 	BuildShop(World, FVector(6200.f, 0.f, 0.f), 2600.f, 2400.f, 180.f, FLinearColor(0.30f, 0.42f, 0.52f));
 	BuildShop(World, FVector(6200.f, 5200.f, 0.f), 2600.f, 2400.f, 180.f, FLinearColor(0.48f, 0.46f, 0.24f));
@@ -320,16 +309,16 @@ void UMallBuilder::BuildStaticGeometry(UWorld* World)
 	BuildShop(World, FVector(-3200.f, 6200.f, 0.f), 2400.f, 2400.f, -90.f, FLinearColor(0.30f, 0.30f, 0.55f));
 	BuildShop(World, FVector(3200.f, 6200.f, 0.f), 2400.f, 2400.f, -90.f, FLinearColor(0.45f, 0.40f, 0.22f));
 
-	// --- Food court (south side) ------------------------------------------
+	// --- Food court --------------------------------------------------------
 	Block(World, FVector(0.f, -6000.f, 8.f), FVector(3200.f, 1800.f, 8.f), FLinearColor(0.42f, 0.35f, 0.22f));
-	Block(World, FVector(0.f, -7900.f, 300.f), FVector(3200.f, 60.f, 300.f), ColWall);		// serving counter wall
+	Block(World, FVector(0.f, -7900.f, 300.f), FVector(3200.f, 60.f, 300.f), ColWall);
 	Block(World, FVector(0.f, -7700.f, WallHeight - 200.f), FVector(1400.f, 30.f, 140.f), ColSign);
 
-	// --- Storage (Team A back of house, north-west) -----------------------
+	// --- Storage, team A back of house ------------------------------------
 	Block(World, FVector(-8000.f, 7000.f, WallHeight * 0.5f), FVector(WallThick, 2400.f, WallHeight * 0.5f), ColWall * 0.8f);
 	Block(World, FVector(-6800.f, 8600.f, WallHeight * 0.5f), FVector(1200.f, WallThick, WallHeight * 0.5f), ColWall * 0.8f);
 
-	// --- Parking (Team B back of house, south-east) -----------------------
+	// --- Parking, team B back of house ------------------------------------
 	Block(World, FVector(8000.f, -7000.f, WallHeight * 0.5f), FVector(WallThick, 2400.f, WallHeight * 0.5f), ColWall * 0.8f);
 	Block(World, FVector(6800.f, -8600.f, WallHeight * 0.5f), FVector(1200.f, WallThick, WallHeight * 0.5f), ColWall * 0.8f);
 	for (int32 Slot = 0; Slot < 6; ++Slot)
@@ -337,44 +326,41 @@ void UMallBuilder::BuildStaticGeometry(UWorld* World)
 		Block(World, FVector(8600.f, -5200.f - Slot * 700.f, 2.f), FVector(1000.f, 20.f, 2.f), FLinearColor::White);
 	}
 
-	// --- Bathrooms (either side of the north entrance) --------------------
+	// --- Bathrooms ----------------------------------------------------------
 	for (int32 Side = 0; Side < 2; ++Side)
 	{
-		const float Y = 8600.f;
 		const float X = (Side == 0) ? 1600.f : -1600.f;
-		Block(World, FVector(X, Y, WallHeight * 0.5f), FVector(700.f, WallThick, WallHeight * 0.5f), ColAccent * 0.6f);
-		Block(World, FVector(X + 700.f, Y - 500.f, WallHeight * 0.5f), FVector(WallThick, 500.f, WallHeight * 0.5f), ColAccent * 0.6f);
-		Block(World, FVector(X - 700.f, Y - 500.f, WallHeight * 0.5f), FVector(WallThick, 500.f, WallHeight * 0.5f), ColAccent * 0.6f);
-		Block(World, FVector(X, Y - 900.f, WallHeight - 150.f), FVector(300.f, 25.f, 100.f), ColSign);
+		Block(World, FVector(X, 8600.f, WallHeight * 0.5f), FVector(700.f, WallThick, WallHeight * 0.5f), ColAccent * 0.6f);
+		Block(World, FVector(X + 700.f, 8100.f, WallHeight * 0.5f), FVector(WallThick, 500.f, WallHeight * 0.5f), ColAccent * 0.6f);
+		Block(World, FVector(X - 700.f, 8100.f, WallHeight * 0.5f), FVector(WallThick, 500.f, WallHeight * 0.5f), ColAccent * 0.6f);
+		Block(World, FVector(X, 7700.f, WallHeight - 150.f), FVector(300.f, 25.f, 100.f), ColSign);
 	}
 
-	// --- Maintenance corridor (spine behind the west shops) ---------------
+	// --- Maintenance corridor behind the west shops ------------------------
 	Block(World, FVector(-8600.f, 0.f, WallHeight * 0.5f), FVector(WallThick, 4000.f, WallHeight * 0.5f), ColWall * 0.7f);
 	Block(World, FVector(-9400.f, 0.f, WallHeight * 0.5f), FVector(WallThick, 4000.f, WallHeight * 0.5f), ColWall * 0.7f);
 	Block(World, FVector(-9000.f, 0.f, WallHeight - 40.f), FVector(400.f, 4000.f, 40.f), ColWall * 0.5f);
 
-	// --- Two staircases and the lift shaft --------------------------------
+	// --- Two staircases and the lift shaft ---------------------------------
 	BuildStairs(World, FVector(3000.f, 3000.f, 0.f), 45.f);
 	BuildStairs(World, FVector(-3000.f, -3000.f, 0.f), -135.f);
 	Block(World, FVector(1800.f, -1800.f, WallHeight * 0.5f), FVector(320.f, 30.f, WallHeight * 0.5f), ColMetal);
 	Block(World, FVector(2130.f, -2130.f, WallHeight * 0.5f), FVector(30.f, 320.f, WallHeight * 0.5f), ColMetal);
 
-	// --- Decoration: pillars, planters, signage ---------------------------
+	// --- Pillars, planters and signage -------------------------------------
 	for (int32 Ring = 0; Ring < 12; ++Ring)
 	{
-		const float Angle = Ring * (360.f / 12.f);
-		const FVector Dir = FRotationMatrix(FRotator(0.f, Angle, 0.f)).GetUnitAxis(EAxis::X);
-		Block(World, Dir * 4600.f + FVector(0.f, 0.f, WallHeight * 0.5f), FVector(90.f, 90.f, WallHeight * 0.5f), ColWall * 0.9f);
-		Block(World, Dir * 2600.f + FVector(0.f, 0.f, 45.f), FVector(140.f, 140.f, 45.f), ColPlanter);
-		Block(World, Dir * 2600.f + FVector(0.f, 0.f, 170.f), FVector(110.f, 110.f, 110.f), FLinearColor(0.15f, 0.45f, 0.18f), 0.f, 0.f, true);
+		const FVector Direction = FRotationMatrix(FRotator(0.f, Ring * 30.f, 0.f)).GetUnitAxis(EAxis::X);
+		Block(World, Direction * 4600.f + FVector(0.f, 0.f, WallHeight * 0.5f), FVector(90.f, 90.f, WallHeight * 0.5f), ColWall * 0.9f);
+		Block(World, Direction * 2600.f + FVector(0.f, 0.f, 45.f), FVector(140.f, 140.f, 45.f), ColPlanter);
+		Block(World, Direction * 2600.f + FVector(0.f, 0.f, 170.f), FVector(110.f, 110.f, 110.f), FLinearColor(0.15f, 0.45f, 0.18f), 0.f, 0.f, true);
 	}
-	// Hanging signage over the atrium.
 	Block(World, FVector(0.f, 3200.f, 1100.f), FVector(700.f, 25.f, 150.f), ColSign);
 	Block(World, FVector(0.f, -3200.f, 1100.f), FVector(700.f, 25.f, 150.f), ColSign);
 }
 
 // ---------------------------------------------------------------------------
-// Gameplay actors (server only)
+// Gameplay actors
 // ---------------------------------------------------------------------------
 
 void UMallBuilder::SpawnGameplayActors(UWorld* World)
@@ -383,17 +369,16 @@ void UMallBuilder::SpawnGameplayActors(UWorld* World)
 	{
 		return;
 	}
-	// Idempotent guard: the game mode may rebuild between matches.
 	for (TActorIterator<APossessablePawn> It(World); It; ++It)
 	{
-		return;
+		return;		// already populated
 	}
 
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	World->SpawnActor<AMallElevator>(AMallElevator::StaticClass(), FVector(2000.f, -2000.f, 20.f), FRotator::ZeroRotator, Params);
 
-	// --- Food court: tables and chairs ------------------------------------
+	// --- Food court tables and chairs --------------------------------------
 	for (int32 TableIndex = 0; TableIndex < 8; ++TableIndex)
 	{
 		const float X = -2400.f + (TableIndex % 4) * 1600.f;
@@ -405,12 +390,11 @@ void UMallBuilder::SpawnGameplayActors(UWorld* World)
 			const float Angle = ChairIndex * 90.f;
 			const FVector Offset = FRotationMatrix(FRotator(0.f, Angle, 0.f)).GetUnitAxis(EAxis::X) * 190.f;
 			SpawnProp(World, FVector(X, Y, 20.f) + Offset, Angle + 180.f, TEXT("CHAIR"), EHostType::Prop, EHostMobility::Slide,
-				FVector(40.f, 40.f, 25.f), FLinearColor(0.25f, 0.30f, 0.38f),
-				FVector(-35.f, 0.f, 60.f), FVector(10.f, 40.f, 45.f));
+				FVector(40.f, 40.f, 25.f), FLinearColor(0.25f, 0.30f, 0.38f), FVector(-35.f, 0.f, 60.f), FVector(10.f, 40.f, 45.f));
 		}
 	}
 
-	// --- Shopping carts, scattered where they were abandoned --------------
+	// --- Abandoned shopping carts -------------------------------------------
 	const FVector CartSpots[] = {
 		FVector(1200.f, 1600.f, 20.f), FVector(-1500.f, 2400.f, 20.f), FVector(4200.f, -1200.f, 20.f),
 		FVector(-4200.f, -2000.f, 20.f), FVector(500.f, -4200.f, 20.f), FVector(-3000.f, 4400.f, 20.f),
@@ -419,11 +403,10 @@ void UMallBuilder::SpawnGameplayActors(UWorld* World)
 	for (int32 Index = 0; Index < UE_ARRAY_COUNT(CartSpots); ++Index)
 	{
 		SpawnProp(World, CartSpots[Index], Index * 37.f, TEXT("SHOPPING CART"), EHostType::Prop, EHostMobility::Wheeled,
-			FVector(55.f, 40.f, 45.f), FLinearColor(0.65f, 0.66f, 0.70f),
-			FVector(-45.f, 0.f, 55.f), FVector(8.f, 38.f, 30.f));
+			FVector(55.f, 40.f, 45.f), FLinearColor(0.65f, 0.66f, 0.70f), FVector(-45.f, 0.f, 55.f), FVector(8.f, 38.f, 30.f));
 	}
 
-	// --- Vending machines, bins, plants ------------------------------------
+	// --- Vending machines, bins, plants ---------------------------------------
 	const FVector VendingSpots[] = {
 		FVector(4550.f, 2600.f, 20.f), FVector(-4550.f, -2600.f, 20.f),
 		FVector(1700.f, 7600.f, 20.f), FVector(-8900.f, 2200.f, 20.f)
@@ -431,33 +414,30 @@ void UMallBuilder::SpawnGameplayActors(UWorld* World)
 	for (int32 Index = 0; Index < UE_ARRAY_COUNT(VendingSpots); ++Index)
 	{
 		SpawnProp(World, VendingSpots[Index], Index * 90.f, TEXT("VENDING MACHINE"), EHostType::Prop, EHostMobility::Static,
-			FVector(45.f, 80.f, 105.f), FLinearColor(0.75f, 0.15f, 0.20f),
-			FVector(48.f, 0.f, 20.f), FVector(6.f, 60.f, 70.f));
+			FVector(45.f, 80.f, 105.f), FLinearColor(0.75f, 0.15f, 0.20f), FVector(48.f, 0.f, 20.f), FVector(6.f, 60.f, 70.f));
 	}
 	for (int32 Index = 0; Index < 10; ++Index)
 	{
-		const float Angle = Index * 36.f;
-		const FVector Dir = FRotationMatrix(FRotator(0.f, Angle, 0.f)).GetUnitAxis(EAxis::X);
-		SpawnProp(World, Dir * 3400.f + FVector(0.f, 0.f, 20.f), Angle, TEXT("TRASH BIN"), EHostType::Prop, EHostMobility::Slide,
-			FVector(38.f, 38.f, 50.f), FLinearColor(0.20f, 0.35f, 0.22f));
-		SpawnProp(World, Dir * 5600.f + FVector(0.f, 0.f, 20.f), Angle, TEXT("PLANT"), EHostType::Prop, EHostMobility::Static,
-			FVector(55.f, 55.f, 70.f), FLinearColor(0.16f, 0.42f, 0.18f));
+		const FVector Direction = FRotationMatrix(FRotator(0.f, Index * 36.f, 0.f)).GetUnitAxis(EAxis::X);
+		SpawnProp(World, Direction * 3400.f + FVector(0.f, 0.f, 20.f), Index * 36.f, TEXT("TRASH BIN"),
+			EHostType::Prop, EHostMobility::Slide, FVector(38.f, 38.f, 50.f), FLinearColor(0.20f, 0.35f, 0.22f));
+		SpawnProp(World, Direction * 5600.f + FVector(0.f, 0.f, 20.f), Index * 36.f, TEXT("PLANT"),
+			EHostType::Prop, EHostMobility::Static, FVector(55.f, 55.f, 70.f), FLinearColor(0.16f, 0.42f, 0.18f));
 	}
 
-	// --- Benches around the atrium -----------------------------------------
+	// --- Benches ---------------------------------------------------------------
 	for (int32 Index = 0; Index < 6; ++Index)
 	{
 		const float Angle = 30.f + Index * 60.f;
-		const FVector Dir = FRotationMatrix(FRotator(0.f, Angle, 0.f)).GetUnitAxis(EAxis::X);
-		SpawnProp(World, Dir * 1500.f + FVector(0.f, 0.f, 20.f), Angle + 90.f, TEXT("BENCH"), EHostType::Prop, EHostMobility::Slide,
-			FVector(140.f, 45.f, 28.f), FLinearColor(0.45f, 0.33f, 0.22f));
+		const FVector Direction = FRotationMatrix(FRotator(0.f, Angle, 0.f)).GetUnitAxis(EAxis::X);
+		SpawnProp(World, Direction * 1500.f + FVector(0.f, 0.f, 20.f), Angle + 90.f, TEXT("BENCH"),
+			EHostType::Prop, EHostMobility::Slide, FVector(140.f, 45.f, 28.f), FLinearColor(0.45f, 0.33f, 0.22f));
 	}
 
-	// --- Doors: shop shutters and back-of-house doors ----------------------
+	// --- Doors ------------------------------------------------------------------
 	const FVector DoorSpots[] = {
 		FVector(-8000.f, 5400.f, 20.f), FVector(8000.f, -5400.f, 20.f),
-		FVector(-8600.f, 3900.f, 20.f), FVector(-8600.f, -3900.f, 20.f),
-		FVector(0.f, 8500.f, 20.f)
+		FVector(-8600.f, 3900.f, 20.f), FVector(-8600.f, -3900.f, 20.f), FVector(0.f, 8500.f, 20.f)
 	};
 	const float DoorYaws[] = { 90.f, 90.f, 0.f, 0.f, 0.f };
 	for (int32 Index = 0; Index < UE_ARRAY_COUNT(DoorSpots); ++Index)
@@ -466,18 +446,16 @@ void UMallBuilder::SpawnGameplayActors(UWorld* World)
 			FVector(20.f, 110.f, 130.f), FLinearColor(0.38f, 0.28f, 0.20f));
 	}
 
-	// --- Vehicles in the parking area --------------------------------------
+	// --- Vehicles ----------------------------------------------------------------
 	for (int32 Index = 0; Index < 4; ++Index)
 	{
 		SpawnProp(World, FVector(8600.f, -5500.f - Index * 700.f, 20.f), 90.f, TEXT("CAR"), EHostType::Vehicle, EHostMobility::Wheeled,
-			FVector(220.f, 95.f, 65.f), FLinearColor(0.15f + Index * 0.2f, 0.2f, 0.35f),
-			FVector(-20.f, 0.f, 95.f), FVector(90.f, 80.f, 40.f));
+			FVector(220.f, 95.f, 65.f), FLinearColor(0.15f + Index * 0.2f, 0.2f, 0.35f), FVector(-20.f, 0.f, 95.f), FVector(90.f, 80.f, 40.f));
 	}
-	// A van left in the loading bay by the storage area.
 	SpawnProp(World, FVector(-8600.f, -5500.f, 20.f), 90.f, TEXT("VAN"), EHostType::Vehicle, EHostMobility::Wheeled,
 		FVector(250.f, 110.f, 110.f), FLinearColor(0.7f, 0.7f, 0.68f));
 
-	// --- Shoppers and staff -------------------------------------------------
+	// --- Shoppers and staff --------------------------------------------------------
 	const TArray<TArray<FVector>> Routes = {
 		{ FVector(2500.f, 2500.f, 95.f), FVector(2500.f, -2500.f, 95.f), FVector(-2500.f, -2500.f, 95.f), FVector(-2500.f, 2500.f, 95.f) },
 		{ FVector(5200.f, 0.f, 95.f), FVector(0.f, 0.f, 95.f), FVector(-5200.f, 0.f, 95.f), FVector(0.f, 0.f, 95.f) },
@@ -495,26 +473,24 @@ void UMallBuilder::SpawnGameplayActors(UWorld* World)
 	};
 	for (int32 Index = 0; Index < Routes.Num(); ++Index)
 	{
-		SpawnShopper(World, Routes[Index][0], Routes[Index], ShirtColours[Index % UE_ARRAY_COUNT(ShirtColours)]);
+		SpawnShopper(World, Routes[Index], ShirtColours[Index % UE_ARRAY_COUNT(ShirtColours)]);
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Query helpers
+// Queries
 // ---------------------------------------------------------------------------
 
 FVector UMallBuilder::GetTeamSpawn(EParasiteTeam Team, int32 PlayerIndex)
 {
-	// Team A spawns west, Team B east, spread along their own wall.
 	const float X = (Team == EParasiteTeam::TeamB) ? 8800.f : -8800.f;
-	const float Y = -1600.f + (PlayerIndex % 5) * 800.f;
-	return FVector(X, Y, 140.f);
+	return FVector(X, -1600.f + (PlayerIndex % 5) * 800.f, 140.f);
 }
 
 FVector UMallBuilder::GetNestLocation(EParasiteTeam Team, int32 Seed)
 {
-	// Several plausible hiding places per side; the match seed picks one so the
-	// nest is not in the same corner every game.
+	// Several plausible hiding places per side, so the nest is not in the same
+	// corner every match.
 	static const FVector TeamASpots[] = {
 		FVector(-6800.f, 8200.f, 120.f),		// storage room
 		FVector(-9000.f, 1500.f, 120.f),		// maintenance corridor
@@ -531,18 +507,18 @@ FVector UMallBuilder::GetNestLocation(EParasiteTeam Team, int32 Seed)
 	return (Team == EParasiteTeam::TeamA) ? TeamASpots[Index] : TeamBSpots[Index];
 }
 
-bool UMallBuilder::IsRestrictedArea(const FVector& Location, EParasiteTeam ForTeam)
+void UMallBuilder::GetRestrictedZone(EParasiteTeam ForTeam, FVector& OutMin, FVector& OutMax)
 {
-	// "Restricted" means the enemy's back of house.
 	if (ForTeam == EParasiteTeam::TeamA)
 	{
-		// Team B's parking / service side.
-		return Location.X > 6000.f && Location.Y < -4000.f;
+		// Team B's parking and service side.
+		OutMin = FVector(6000.f, -10000.f, -500.f);
+		OutMax = FVector(10000.f, -4000.f, 2000.f);
 	}
-	if (ForTeam == EParasiteTeam::TeamB)
+	else
 	{
-		// Team A's storage / maintenance side.
-		return (Location.X < -6000.f && Location.Y > 4000.f) || Location.X < -8400.f;
+		// Team A's storage and maintenance side.
+		OutMin = FVector(-10000.f, 4000.f, -500.f);
+		OutMax = FVector(-6000.f, 10000.f, 2000.f);
 	}
-	return false;
 }

@@ -5,10 +5,10 @@
 #include "ParasiteTypes.h"
 #include "ParasitePlayerState.generated.h"
 
-class UPossessableComponent;
-
 /**
- * Per-player match state. Everything here is written by the server only.
+ * A replicated read-only view of one player's simulation state. Nothing here is
+ * ever written by a client, and nothing here is authoritative: the game mode
+ * copies these values out of Parasite::FMatchSim every tick.
  */
 UCLASS()
 class PARASITE_API AParasitePlayerState : public APlayerState
@@ -16,8 +16,6 @@ class PARASITE_API AParasitePlayerState : public APlayerState
 	GENERATED_BODY()
 
 public:
-	AParasitePlayerState();
-
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
 	virtual void CopyProperties(APlayerState* NewPlayerState) override;
 
@@ -27,51 +25,34 @@ public:
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
 	int32 DNA = 0;
 
-	/** Total DNA earned this match (used for the tie-break; never spent down). */
+	/** Total DNA earned this match; the timer tie break uses the team total. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
 	int32 LifetimeDNA = 0;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
+	int32 InfectionTicks = 0;
+
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
 	TArray<EParasiteUpgrade> Upgrades;
 
-	/** World time when possession becomes available again. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
-	float PossessAvailableTime = 0.f;
+	int32 NumUpgrades = 0;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
-	float ScanAvailableTime = 0.f;
+	float PossessCooldownRemaining = 0.f;
 
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
-	float LeapAvailableTime = 0.f;
+	float ScanCooldownRemaining = 0.f;
 
-	/** The host this player is currently riding, if any. */
+	/** The actor being ridden, if any. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
 	TObjectPtr<AActor> CurrentHost = nullptr;
 
-	/** Number of nest infection ticks contributed (stat / scoreboard). */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
-	int32 InfectionTicks = 0;
+	FString CurrentHostName;
 
-	EParasiteTeam GetTeam() const { return Team; }
-	EParasiteTeam GetEnemyTeam() const;
+	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
+	float HostTimeRemaining = 0.f;
 
 	bool HasUpgrade(EParasiteUpgrade Upgrade) const { return Upgrades.Contains(Upgrade); }
-
-	/** Effective possession range including the Jumper upgrade. */
-	float GetPossessRange() const;
-
-	/** Radius multiplier applied to enemy scans looking for this player (Infiltrator). */
-	float GetStealthScale() const;
-
-	bool IsPossessCooldownReady() const;
-	bool IsScanReady() const;
-	bool IsLeapReady() const;
-
-	/** Server only helpers. */
-	void AwardDNA(int32 Amount);
-	bool TryPurchaseUpgrade(EParasiteUpgrade Upgrade);
-	void StartPossessCooldown();
-	void StartScanCooldown();
-	void StartLeapCooldown();
-	void ResetForNewMatch();
 };

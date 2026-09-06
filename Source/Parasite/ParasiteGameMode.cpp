@@ -5,12 +5,15 @@
 #include "ParasiteCharacter.h"
 #include "ParasiteHUD.h"
 #include "ParasiteNest.h"
-#include "MallBuilder.h"
+#include "ParasiteNPC.h"
+#include "PossessablePawn.h"
 #include "PossessableComponent.h"
+#include "MallBuilder.h"
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/GameSession.h"
-#include "EngineUtils.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
+#include "Containers/StringConv.h"
 
 AParasiteGameMode::AParasiteGameMode()
 {
@@ -22,19 +25,23 @@ AParasiteGameMode::AParasiteGameMode()
 	DefaultPawnClass = AParasiteCharacter::StaticClass();
 	HUDClass = AParasiteHUD::StaticClass();
 
-	bStartPlayersAsSpectators = false;
 	bUseSeamlessTravel = false;
+}
+
+AParasiteGameMode* AParasiteGameMode::Get(const UObject* WorldContext)
+{
+	const UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContext, EGetWorldErrorMode::ReturnNull) : nullptr;
+	return World ? World->GetAuthGameMode<AParasiteGameMode>() : nullptr;
 }
 
 void AParasiteGameMode::InitGame(const FString& MapName, const FString& Options, FString& ErrorMessage)
 {
 	Super::InitGame(MapName, Options, ErrorMessage);
-	MatchSeed = FMath::Rand();
 
-	// 5v5 ceiling. Fewer players is fine, more is not.
+	MatchSeed = FMath::Rand();
 	if (GameSession)
 	{
-		GameSession->MaxPlayers = ParasiteRules::MaxPlayers;
+		GameSession->MaxPlayers = Sim.GetRules().MaxPlayers;
 	}
 }
 
@@ -44,7 +51,7 @@ void AParasiteGameMode::BeginPlay()
 
 	UMallBuilder::SpawnGameplayActors(GetWorld());
 
-	// Player starts, five per team, created from the mall layout.
+	// Five starts per team, taken from the mall layout.
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	for (int32 Index = 0; Index < 5; ++Index)
@@ -63,125 +70,99 @@ void AParasiteGameMode::BeginPlay()
 		}
 	}
 
-	EnterPhase(EMatchPhase::Lobby);
+	// The restricted areas that pay an infiltration bonus: each team's back of house.
+	FVector Min, Max;
+	UMallBuilder::GetRestrictedZone(EParasiteTeam::TeamA, Min, Max);
+	Sim.SetRestrictedZone(Parasite::ETeam::A, ToCore(Min), ToCore(Max));
+	UMallBuilder::GetRestrictedZone(EParasiteTeam::TeamB, Min, Max);
+	Sim.SetRestrictedZone(Parasite::ETeam::B, ToCore(Min), ToCore(Max));
+
+	SpawnNests();
 }
 
 // ---------------------------------------------------------------------------
-// Phases
+// Host registry
 // ---------------------------------------------------------------------------
 
-void AParasiteGameMode::EnterPhase(EMatchPhase NewPhase)
+void AParasiteGameMode::RegisterHost(UPossessableComponent* Host)
 {
-	AParasiteGameState* GS = GetGameState<AParasiteGameState>();
-	if (!GS)
+	if (!Host || !Host->GetOwner() || Host->GetHostId() != Parasite::InvalidHost)
 	{
 		return;
 	}
-	GS->Phase = NewPhase;
+	const Parasite::HostId Id = Sim.AddHost(
+		ToCore(Host->HostType), ToCore(Host->Mobility),
+		TCHAR_TO_UTF8(*Host->HostDisplayName),
+		ToCore(Host->GetOwner()->GetActorLocation()));
 
-	switch (NewPhase)
-	{
-	case EMatchPhase::Lobby:
-		GS->PhaseTimeRemaining = 0.f;
-		GS->WinningTeam = EParasiteTeam::None;
-		GS->ResultReason.Empty();
-		break;
-
-	case EMatchPhase::Countdown:
-		GS->PhaseTimeRemaining = ParasiteRules::CountdownDuration;
-		break;
-
-	case EMatchPhase::InProgress:
-		GS->PhaseTimeRemaining = ParasiteRules::MatchDuration;
-		GS->NestAInfection = 0.f;
-		GS->NestBInfection = 0.f;
-		InfiltrationCredited.Reset();
-		SpawnNests();
-		SpawnAllPlayers();
-		BroadcastSound(EParasiteSound::MatchStart);
-		break;
-
-	case EMatchPhase::PostMatch:
-		GS->PhaseTimeRemaining = ParasiteRules::PostMatchDuration;
-		BroadcastSound(EParasiteSound::MatchEnd);
-		break;
-	}
+	Host->SetHostId(Id);
+	HostComponents.Add(Id, Host);
 }
 
-void AParasiteGameMode::Tick(float DeltaSeconds)
+void AParasiteGameMode::UnregisterHost(UPossessableComponent* Host)
 {
-	Super::Tick(DeltaSeconds);
-
-	AParasiteGameState* GS = GetGameState<AParasiteGameState>();
-	if (!GS)
+	if (!Host || Host->GetHostId() == Parasite::InvalidHost)
 	{
 		return;
 	}
+	const Parasite::HostId Id = Host->GetHostId();
 
-	switch (GS->Phase)
-	{
-	case EMatchPhase::Lobby:
-		// One player is enough to start: the prototype should never be unplayable
-		// just because nobody else showed up.
-		if (GetNumPlayers() >= 1)
-		{
-			EnterPhase(EMatchPhase::Countdown);
-		}
-		break;
-
-	case EMatchPhase::Countdown:
-		GS->PhaseTimeRemaining -= DeltaSeconds;
-		if (GS->PhaseTimeRemaining <= 0.f)
-		{
-			EnterPhase(EMatchPhase::InProgress);
-		}
-		break;
-
-	case EMatchPhase::InProgress:
-		GS->PhaseTimeRemaining = FMath::Max(0.f, GS->PhaseTimeRemaining - DeltaSeconds);
-		TickPossessionTimers();
-		TickInfiltrationRewards(DeltaSeconds);
-		EvaluateWinCondition();
-		break;
-
-	case EMatchPhase::PostMatch:
-		GS->PhaseTimeRemaining -= DeltaSeconds;
-		if (GS->PhaseTimeRemaining <= 0.f)
-		{
-			RestartMatch();
-		}
-		break;
-	}
+	// The simulation spits out anybody riding it; the world catches up on the
+	// next tick through ApplyPossessionChanges.
+	Sim.RemoveHost(Id);
+	HostComponents.Remove(Id);
+	Host->SetHostId(Parasite::InvalidHost);
 }
 
-// ---------------------------------------------------------------------------
-// Teams and spawning
-// ---------------------------------------------------------------------------
-
-void AParasiteGameMode::AssignTeam(AParasitePlayerState* PlayerState)
+UPossessableComponent* AParasiteGameMode::FindHostComponent(Parasite::HostId HostId) const
 {
-	AParasiteGameState* GS = GetGameState<AParasiteGameState>();
-	if (!PlayerState || !GS || PlayerState->Team != EParasiteTeam::None)
-	{
-		return;
-	}
-	const int32 CountA = GS->GetTeamPlayerCount(EParasiteTeam::TeamA);
-	const int32 CountB = GS->GetTeamPlayerCount(EParasiteTeam::TeamB);
-	PlayerState->Team = (CountA <= CountB) ? EParasiteTeam::TeamA : EParasiteTeam::TeamB;
+	const TObjectPtr<UPossessableComponent>* Found = HostComponents.Find(HostId);
+	return Found ? Found->Get() : nullptr;
 }
+
+AParasitePlayerController* AParasiteGameMode::FindController(Parasite::PlayerId PlayerId) const
+{
+	const TObjectPtr<AParasitePlayerController>* Found = ControllerByPlayer.Find(PlayerId);
+	return Found ? Found->Get() : nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// Joining and leaving
+// ---------------------------------------------------------------------------
 
 void AParasiteGameMode::PostLogin(APlayerController* NewPlayer)
 {
 	Super::PostLogin(NewPlayer);
 
-	AParasitePlayerState* PS = NewPlayer ? NewPlayer->GetPlayerState<AParasitePlayerState>() : nullptr;
-	AssignTeam(PS);
-
-	AParasiteGameState* GS = GetGameState<AParasiteGameState>();
-	if (GS && GS->Phase == EMatchPhase::InProgress)
+	AParasitePlayerController* PC = Cast<AParasitePlayerController>(NewPlayer);
+	AParasitePlayerState* PS = PC ? PC->GetParasitePlayerState() : nullptr;
+	if (!PC || !PS)
 	{
-		// Late joiner: drop them straight in.
-		RestartPlayer(NewPlayer);
+		return;
+	}
+
+	const Parasite::PlayerId Id = Sim.AddPlayer(TCHAR_TO_UTF8(*PS->GetPlayerName()));
+	if (Id == Parasite::InvalidPlayer)
+	{
+		// The simulation refused the join: the match is already full.
+		if (GameSession)
+		{
+			GameSession->KickPlayer(PC, FText::FromString(TEXT("Server is full (10 players).")));
+		}
+		return;
+	}
+
+	PC->SetSimPlayerId(Id);
+	ControllerByPlayer.Add(Id, PC);
+	if (const Parasite::FPlayer* SimPlayer = Sim.FindPlayer(Id))
+	{
+		PS->Team = FromCore(SimPlayer->Team);
+	}
+
+	// Late joiners drop straight into the running match.
+	if (Sim.GetPhase() == Parasite::EMatchPhase::InProgress)
+	{
+		RestartPlayer(PC);
 	}
 }
 
@@ -189,16 +170,19 @@ void AParasiteGameMode::Logout(AController* Exiting)
 {
 	if (AParasitePlayerController* PC = Cast<AParasitePlayerController>(Exiting))
 	{
-		// Free whatever they were riding so the host is not stuck forever.
-		PC->ServerExitPossession(false);
+		const Parasite::PlayerId Id = PC->GetSimPlayerId();
+		if (Id != Parasite::InvalidPlayer)
+		{
+			// Frees whatever they were riding and releases anybody riding them.
+			Sim.RemovePlayer(Id);
+			ControllerByPlayer.Remove(Id);
+			LastKnownHost.Remove(Id);
+			ApplyPossessionChanges();
+		}
 		if (AParasiteCharacter* Body = PC->ParasiteBody.Get())
 		{
 			Body->Destroy();
 		}
-	}
-	if (AParasitePlayerState* PS = Exiting ? Exiting->GetPlayerState<AParasitePlayerState>() : nullptr)
-	{
-		InfiltrationCredited.Remove(PS);
 	}
 	Super::Logout(Exiting);
 }
@@ -206,7 +190,7 @@ void AParasiteGameMode::Logout(AController* Exiting)
 AActor* AParasiteGameMode::ChoosePlayerStart_Implementation(AController* Player)
 {
 	const AParasitePlayerState* PS = Player ? Player->GetPlayerState<AParasitePlayerState>() : nullptr;
-	const EParasiteTeam Team = PS ? PS->GetTeam() : EParasiteTeam::TeamA;
+	const EParasiteTeam Team = PS ? PS->Team : EParasiteTeam::TeamA;
 
 	TArray<TObjectPtr<APlayerStart>>& Starts = (Team == EParasiteTeam::TeamB) ? TeamBStarts : TeamAStarts;
 	int32& Cursor = (Team == EParasiteTeam::TeamB) ? StartIndexB : StartIndexA;
@@ -227,8 +211,12 @@ void AParasiteGameMode::RestartPlayer(AController* NewPlayer)
 	AParasitePlayerController* PC = Cast<AParasitePlayerController>(NewPlayer);
 	if (PC)
 	{
-		// Drop any host and destroy the stale body before making a new one.
-		PC->ServerExitPossession(false);
+		// Leave any host and drop the stale body before making a new one.
+		if (PC->GetSimPlayerId() != Parasite::InvalidPlayer)
+		{
+			Sim.ExitPossession(PC->GetSimPlayerId(), false);
+			ApplyPossessionChanges();
+		}
 		if (AParasiteCharacter* OldBody = PC->ParasiteBody.Get())
 		{
 			if (PC->GetPawn() == OldBody)
@@ -239,6 +227,7 @@ void AParasiteGameMode::RestartPlayer(AController* NewPlayer)
 			PC->SetParasiteBody(nullptr);
 		}
 	}
+
 	Super::RestartPlayer(NewPlayer);
 
 	if (PC)
@@ -246,9 +235,18 @@ void AParasiteGameMode::RestartPlayer(AController* NewPlayer)
 		if (AParasiteCharacter* Body = Cast<AParasiteCharacter>(PC->GetPawn()))
 		{
 			PC->SetParasiteBody(Body);
-			if (const AParasitePlayerState* PS = PC->GetParasitePlayerState())
+			Body->ApplyTeamColour(PC->GetParasitePlayerState() ? PC->GetParasitePlayerState()->Team : EParasiteTeam::None);
+			Sim.SetPlayerLocation(PC->GetSimPlayerId(), ToCore(Body->GetActorLocation()));
+
+			// Point the body's component at the host the simulation already made
+			// for this player, so hijack timers and scans replicate through it.
+			if (const Parasite::FPlayer* SimPlayer = Sim.FindPlayer(PC->GetSimPlayerId()))
 			{
-				Body->ApplyTeamColour(PS->GetTeam());
+				if (UPossessableComponent* BodyHost = Body->Possessable)
+				{
+					BodyHost->SetHostId(SimPlayer->BodyHost);
+					HostComponents.Add(SimPlayer->BodyHost, BodyHost);
+				}
 			}
 		}
 	}
@@ -262,19 +260,309 @@ void AParasiteGameMode::SpawnAllPlayers()
 	{
 		if (AParasitePlayerController* PC = Cast<AParasitePlayerController>(It->Get()))
 		{
-			AssignTeam(PC->GetParasitePlayerState());
 			RestartPlayer(PC);
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Nests
+// The simulation loop
 // ---------------------------------------------------------------------------
 
-void AParasiteGameMode::ClearNests()
+void AParasiteGameMode::Tick(float DeltaSeconds)
 {
-	for (TObjectPtr<AParasiteNest>& Nest : Nests)
+	Super::Tick(DeltaSeconds);
+
+	PushWorldIntoSim();
+	Sim.Tick(DeltaSeconds);
+	ApplyPossessionChanges();
+	PullSimIntoWorld();
+	SyncPhase();
+}
+
+void AParasiteGameMode::PushWorldIntoSim()
+{
+	// Hosts move around the mall; the simulation needs to know where they are to
+	// judge range, scans and nest presence.
+	for (const TPair<int32, TObjectPtr<UPossessableComponent>>& Pair : HostComponents)
+	{
+		if (const UPossessableComponent* Host = Pair.Value.Get())
+		{
+			if (const AActor* Owner = Host->GetOwner())
+			{
+				Sim.SetHostLocation(Pair.Key, ToCore(Owner->GetActorLocation()));
+			}
+		}
+	}
+	// A player's parasite body is a host too, but it is spawned by the game mode
+	// rather than registered, so push it separately.
+	for (const TPair<int32, TObjectPtr<AParasitePlayerController>>& Pair : ControllerByPlayer)
+	{
+		const AParasitePlayerController* PC = Pair.Value.Get();
+		if (PC && PC->ParasiteBody)
+		{
+			Sim.SetPlayerLocation(Pair.Key, ToCore(PC->ParasiteBody->GetActorLocation()));
+		}
+	}
+}
+
+void AParasiteGameMode::ApplyPossessionChanges()
+{
+	// The simulation has already decided who is riding what. All that is left is
+	// to make the Unreal side agree: swap pawns, hide bodies, move cameras.
+	for (const Parasite::FPlayer& SimPlayer : Sim.GetPlayers())
+	{
+		AParasitePlayerController* PC = FindController(SimPlayer.Id);
+		if (!PC)
+		{
+			continue;
+		}
+		const int32 NewHost = SimPlayer.CurrentHost;
+		const int32* Previous = LastKnownHost.Find(SimPlayer.Id);
+		const int32 OldHost = Previous ? *Previous : Parasite::InvalidHost;
+		if (NewHost == OldHost)
+		{
+			continue;
+		}
+		LastKnownHost.Add(SimPlayer.Id, NewHost);
+
+		if (OldHost != Parasite::InvalidHost)
+		{
+			ExitHostInWorld(PC, FindHostComponent(OldHost));
+		}
+		if (NewHost != Parasite::InvalidHost)
+		{
+			EnterHostInWorld(PC, FindHostComponent(NewHost));
+		}
+	}
+
+	// A player whose body is being ridden by somebody else.
+	for (const Parasite::FPlayer& SimPlayer : Sim.GetPlayers())
+	{
+		AParasitePlayerController* PC = FindController(SimPlayer.Id);
+		const Parasite::FHost* Body = PC ? Sim.FindHost(SimPlayer.BodyHost) : nullptr;
+		if (!PC || !Body || !PC->ParasiteBody)
+		{
+			continue;
+		}
+		PC->ParasiteBody->SetHijacked(Body->bPossessed, Body->ResistProgress);
+	}
+}
+
+void AParasiteGameMode::EnterHostInWorld(AParasitePlayerController* Controller, UPossessableComponent* Host)
+{
+	if (!Controller || !Host || !Host->GetOwner())
+	{
+		return;
+	}
+	AActor* HostActor = Host->GetOwner();
+	Host->bPossessed = true;
+	Host->Rider = Controller->GetParasitePlayerState();
+
+	if (AParasiteCharacter* Victim = Cast<AParasiteCharacter>(HostActor))
+	{
+		// An enemy player is driven in place: the victim keeps their controller,
+		// their connection and their state. Only the steering changes hands.
+		Controller->SetHijackVictim(Victim);
+		if (Controller->ParasiteBody)
+		{
+			Controller->ParasiteBody->SetDormant(true, FVector::ZeroVector);
+		}
+		Controller->SetViewTargetWithBlend(Victim, 0.25f);
+
+		if (AParasitePlayerController* VictimPC = Cast<AParasitePlayerController>(Victim->GetController()))
+		{
+			VictimPC->ClientNotify(TEXT("!! SOMETHING IS INSIDE YOU - MASH [R] TO RESIST !!"), 4.f);
+			VictimPC->ClientPlaySound(static_cast<uint8>(EParasiteSound::Detected));
+		}
+	}
+	else if (APawn* HostPawn = Cast<APawn>(HostActor))
+	{
+		// Objects, NPCs and vehicles hand their pawn over for real.
+		if (Controller->ParasiteBody)
+		{
+			Controller->ParasiteBody->SetDormant(true, FVector::ZeroVector);
+		}
+		if (AController* Existing = HostPawn->GetController())
+		{
+			Existing->UnPossess();		// take the wheel from an NPC's AI
+		}
+		Controller->UnPossess();
+		Controller->Possess(HostPawn);
+	}
+
+	Controller->ClientNotify(FString::Printf(TEXT("POSSESSED: %s"), *Host->HostDisplayName), 2.f);
+	Controller->ClientPlaySound(static_cast<uint8>(EParasiteSound::Possess));
+	FParasiteAudio::Play(this, EParasiteSound::Possess, HostActor->GetActorLocation());
+}
+
+void AParasiteGameMode::ExitHostInWorld(AParasitePlayerController* Controller, UPossessableComponent* Host)
+{
+	if (!Controller)
+	{
+		return;
+	}
+	FVector WakeLocation = Controller->ParasiteBody ? Controller->ParasiteBody->GetActorLocation() : FVector::ZeroVector;
+	AActor* HostActor = Host ? Host->GetOwner() : nullptr;
+
+	if (Host)
+	{
+		Host->bPossessed = false;
+		Host->Rider = nullptr;
+		Host->PossessionTimeRemaining = 0.f;
+	}
+	if (IsValid(HostActor))
+	{
+		WakeLocation = HostActor->GetActorLocation() + FVector(0.f, 0.f, 60.f);
+
+		if (AParasiteCharacter* Victim = Cast<AParasiteCharacter>(HostActor))
+		{
+			// Pop out beside the victim, not inside them.
+			WakeLocation = Victim->GetActorLocation() - Victim->GetActorForwardVector() * 120.f + FVector(0.f, 0.f, 40.f);
+		}
+		else if (AParasiteNPC* NPC = Cast<AParasiteNPC>(HostActor))
+		{
+			if (Controller->GetPawn() == NPC)
+			{
+				Controller->UnPossess();
+			}
+			if (!NPC->GetController())
+			{
+				NPC->SpawnDefaultController();		// hand it back its own dim brain
+			}
+		}
+	}
+	Controller->SetHijackVictim(nullptr);
+
+	if (AParasiteCharacter* Body = Controller->ParasiteBody.Get())
+	{
+		Body->SetDormant(false, WakeLocation);
+		if (Controller->GetPawn() != Body)
+		{
+			Controller->UnPossess();
+			Controller->Possess(Body);
+		}
+		Controller->SetViewTargetWithBlend(Body, 0.2f);
+		Sim.SetPlayerLocation(Controller->GetSimPlayerId(), ToCore(WakeLocation));
+	}
+
+	Controller->ClientPlaySound(static_cast<uint8>(EParasiteSound::PossessExit));
+	if (IsValid(HostActor))
+	{
+		FParasiteAudio::Play(this, EParasiteSound::PossessExit, HostActor->GetActorLocation());
+	}
+}
+
+void AParasiteGameMode::PullSimIntoWorld()
+{
+	const float Now = Sim.GetTime();
+
+	// Hosts: possession clock and scan reveal.
+	for (const TPair<int32, TObjectPtr<UPossessableComponent>>& Pair : HostComponents)
+	{
+		UPossessableComponent* Host = Pair.Value.Get();
+		const Parasite::FHost* SimHost = Sim.FindHost(Pair.Key);
+		if (!Host || !SimHost)
+		{
+			continue;
+		}
+		Host->PossessionTimeRemaining = SimHost->bPossessed ? FMath::Max(0.f, SimHost->PossessionEndTime - Now) : 0.f;
+
+		const bool bRevealed = Sim.GetRevealEndTime(Pair.Key) > Now;
+		if (Host->bRevealed != bRevealed)
+		{
+			Host->bRevealed = bRevealed;
+			Host->OnRep_Revealed();		// the server needs the visual too
+		}
+	}
+
+	// Players: the replicated scoreboard and HUD values.
+	for (const Parasite::FPlayer& SimPlayer : Sim.GetPlayers())
+	{
+		AParasitePlayerController* PC = FindController(SimPlayer.Id);
+		AParasitePlayerState* PS = PC ? PC->GetParasitePlayerState() : nullptr;
+		if (!PS)
+		{
+			continue;
+		}
+		PS->Team = FromCore(SimPlayer.Team);
+		PS->DNA = SimPlayer.DNA;
+		PS->LifetimeDNA = SimPlayer.LifetimeDNA;
+		PS->InfectionTicks = SimPlayer.InfectionTicks;
+		PS->PossessCooldownRemaining = FMath::Max(0.f, SimPlayer.PossessReadyTime - Now);
+		PS->ScanCooldownRemaining = FMath::Max(0.f, SimPlayer.ScanReadyTime - Now);
+		PS->NumUpgrades = static_cast<int32>(SimPlayer.Upgrades.size());
+
+		PS->Upgrades.Reset();
+		for (Parasite::EUpgrade Upgrade : SimPlayer.Upgrades)
+		{
+			PS->Upgrades.Add(static_cast<EParasiteUpgrade>(Upgrade));
+		}
+
+		UPossessableComponent* Host = FindHostComponent(SimPlayer.CurrentHost);
+		PS->CurrentHost = Host ? Host->GetOwner() : nullptr;
+		PS->CurrentHostName = Host ? Host->HostDisplayName : FString();
+		PS->HostTimeRemaining = Host ? Host->PossessionTimeRemaining : 0.f;
+	}
+
+	// Match state.
+	if (AParasiteGameState* GS = GetGameState<AParasiteGameState>())
+	{
+		GS->Phase = FromCore(Sim.GetPhase());
+		GS->PhaseTimeRemaining = Sim.GetPhaseTimeRemaining();
+		GS->NestAInfection = Sim.GetNest(Parasite::ETeam::A).Infection;
+		GS->NestBInfection = Sim.GetNest(Parasite::ETeam::B).Infection;
+		GS->WinningTeam = FromCore(Sim.GetWinner());
+		GS->ResultReason = UTF8_TO_TCHAR(Sim.GetResultReason().c_str());
+	}
+
+	// Nests.
+	for (AParasiteNest* Nest : Nests)
+	{
+		if (!IsValid(Nest))
+		{
+			continue;
+		}
+		const Parasite::FNest& SimNest = Sim.GetNest(ToCore(Nest->OwningTeam));
+		Nest->Infection = SimNest.Infection;
+		Nest->Health = SimNest.Health;
+		Nest->bUnderAttack = SimNest.bUnderAttack;
+		if (SimNest.bPulsedThisTick)
+		{
+			FParasiteAudio::Play(this, EParasiteSound::NestDamage, Nest->GetActorLocation());
+		}
+	}
+}
+
+void AParasiteGameMode::SyncPhase()
+{
+	const EMatchPhase Phase = FromCore(Sim.GetPhase());
+	if (Phase == LastPhase)
+	{
+		return;
+	}
+	LastPhase = Phase;
+
+	switch (Phase)
+	{
+	case EMatchPhase::InProgress:
+		SpawnNests();
+		SpawnAllPlayers();
+		BroadcastSound(EParasiteSound::MatchStart);
+		break;
+
+	case EMatchPhase::PostMatch:
+		BroadcastSound(EParasiteSound::MatchEnd);
+		break;
+
+	default:
+		break;
+	}
+}
+
+void AParasiteGameMode::SpawnNests()
+{
+	for (AParasiteNest* Nest : Nests)
 	{
 		if (IsValid(Nest))
 		{
@@ -282,16 +570,10 @@ void AParasiteGameMode::ClearNests()
 		}
 	}
 	Nests.Reset();
-}
-
-void AParasiteGameMode::SpawnNests()
-{
-	ClearNests();
 	MatchSeed = FMath::Rand();
 
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
 	for (int32 Index = 0; Index < 2; ++Index)
 	{
 		const EParasiteTeam Team = (Index == 0) ? EParasiteTeam::TeamA : EParasiteTeam::TeamB;
@@ -299,135 +581,10 @@ void AParasiteGameMode::SpawnNests()
 		if (AParasiteNest* Nest = GetWorld()->SpawnActor<AParasiteNest>(AParasiteNest::StaticClass(), Location, FRotator::ZeroRotator, Params))
 		{
 			Nest->OwningTeam = Team;
-			Nest->Infection = 0.f;
-			Nest->Health = 100.f;
 			Nests.Add(Nest);
+			Sim.SetNestLocation(ToCore(Team), ToCore(Location));
 		}
 	}
-}
-
-// ---------------------------------------------------------------------------
-// Scoring and win condition
-// ---------------------------------------------------------------------------
-
-void AParasiteGameMode::TickPossessionTimers()
-{
-	// The server owns every possession clock. Done here rather than in the
-	// controller because PlayerTick is not guaranteed to run for remote clients.
-	const float Now = GetWorld()->GetTimeSeconds();
-	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
-	{
-		AParasitePlayerController* PC = Cast<AParasitePlayerController>(It->Get());
-		AParasitePlayerState* PS = PC ? PC->GetParasitePlayerState() : nullptr;
-		if (!PS || !PS->CurrentHost)
-		{
-			continue;
-		}
-		const UPossessableComponent* Host = PS->CurrentHost->FindComponentByClass<UPossessableComponent>();
-		if (!IsValid(PS->CurrentHost) || !Host || Now >= Host->PossessionEndTime)
-		{
-			PC->ServerExitPossession(false);
-		}
-	}
-}
-
-void AParasiteGameMode::TickInfiltrationRewards(float DeltaSeconds)
-{
-	InfiltrationTimer += DeltaSeconds;
-	if (InfiltrationTimer < 1.f)
-	{
-		return;
-	}
-	InfiltrationTimer = 0.f;
-
-	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
-	{
-		AParasitePlayerController* PC = Cast<AParasitePlayerController>(It->Get());
-		AParasitePlayerState* PS = PC ? PC->GetParasitePlayerState() : nullptr;
-		if (!PS || PS->GetTeam() == EParasiteTeam::None || InfiltrationCredited.Contains(PS))
-		{
-			continue;
-		}
-		// Infiltration only counts while wearing a disguise - walking in as a
-		// naked parasite is not infiltration, it is a stroll.
-		const AActor* Body = PS->CurrentHost.Get();
-		if (!Body)
-		{
-			continue;
-		}
-		if (UMallBuilder::IsRestrictedArea(Body->GetActorLocation(), PS->GetTeam()))
-		{
-			PS->AwardDNA(ParasiteRules::DNA_Infiltrate);
-			InfiltrationCredited.Add(PS);
-			PC->ClientNotify(TEXT("INFILTRATION BONUS"), 2.f);
-		}
-	}
-}
-
-void AParasiteGameMode::EvaluateWinCondition()
-{
-	AParasiteGameState* GS = GetGameState<AParasiteGameState>();
-	if (!GS)
-	{
-		return;
-	}
-
-	if (GS->NestBInfection >= 100.f)
-	{
-		FinishMatch(EParasiteTeam::TeamA, TEXT("TEAM B NEST FULLY INFECTED"));
-		return;
-	}
-	if (GS->NestAInfection >= 100.f)
-	{
-		FinishMatch(EParasiteTeam::TeamB, TEXT("TEAM A NEST FULLY INFECTED"));
-		return;
-	}
-	if (GS->PhaseTimeRemaining > 0.f)
-	{
-		return;
-	}
-
-	// Time up: highest infection wins, DNA breaks the tie.
-	const float InfectionByA = GS->NestBInfection;
-	const float InfectionByB = GS->NestAInfection;
-	if (!FMath::IsNearlyEqual(InfectionByA, InfectionByB, 0.01f))
-	{
-		const EParasiteTeam Winner = (InfectionByA > InfectionByB) ? EParasiteTeam::TeamA : EParasiteTeam::TeamB;
-		FinishMatch(Winner, TEXT("TIME UP - HIGHEST INFECTION"));
-		return;
-	}
-
-	const int32 DNAA = GS->GetTeamDNA(EParasiteTeam::TeamA);
-	const int32 DNAB = GS->GetTeamDNA(EParasiteTeam::TeamB);
-	if (DNAA == DNAB)
-	{
-		FinishMatch(EParasiteTeam::None, TEXT("TIME UP - DEAD HEAT"));
-	}
-	else
-	{
-		FinishMatch(DNAA > DNAB ? EParasiteTeam::TeamA : EParasiteTeam::TeamB, TEXT("TIME UP - DNA TIE BREAK"));
-	}
-}
-
-void AParasiteGameMode::FinishMatch(EParasiteTeam Winner, const FString& Reason)
-{
-	AParasiteGameState* GS = GetGameState<AParasiteGameState>();
-	if (!GS || GS->Phase == EMatchPhase::PostMatch)
-	{
-		return;
-	}
-	GS->WinningTeam = Winner;
-	GS->ResultReason = Reason;
-
-	// Everybody comes home.
-	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
-	{
-		if (AParasitePlayerController* PC = Cast<AParasitePlayerController>(It->Get()))
-		{
-			PC->ServerExitPossession(false);
-		}
-	}
-	EnterPhase(EMatchPhase::PostMatch);
 }
 
 void AParasiteGameMode::BroadcastSound(EParasiteSound Sound)
@@ -441,15 +598,183 @@ void AParasiteGameMode::BroadcastSound(EParasiteSound Sound)
 	}
 }
 
-void AParasiteGameMode::RestartMatch()
+// ---------------------------------------------------------------------------
+// Player requests
+// ---------------------------------------------------------------------------
+
+void AParasiteGameMode::RequestPossess(AParasitePlayerController* Controller)
 {
-	ClearNests();
-	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	if (!Controller)
 	{
-		if (AParasitePlayerController* PC = Cast<AParasitePlayerController>(It->Get()))
+		return;
+	}
+	Parasite::HostId Chosen = Parasite::InvalidHost;
+	const Parasite::EPossessResult Result = Sim.TryPossessNearest(Controller->GetSimPlayerId(), Chosen);
+	if (Result != Parasite::EPossessResult::Success)
+	{
+		Controller->ClientNotify(UTF8_TO_TCHAR(Parasite::ToString(Result)), 1.5f);
+		Controller->ClientPlaySound(static_cast<uint8>(EParasiteSound::PossessFail));
+		return;
+	}
+	ApplyPossessionChanges();
+}
+
+void AParasiteGameMode::RequestExit(AParasitePlayerController* Controller)
+{
+	if (Controller && Sim.ExitPossession(Controller->GetSimPlayerId(), false))
+	{
+		Controller->ClientNotify(TEXT("LEFT HOST"), 1.5f);
+		ApplyPossessionChanges();
+	}
+}
+
+void AParasiteGameMode::RequestInteract(AParasitePlayerController* Controller)
+{
+	// Doors are opened rather than possessed, so a disguised player can move
+	// through the mall without breaking character.
+	if (!Controller)
+	{
+		return;
+	}
+	const FVector Origin = FromCore(Sim.GetPlayerPresence(Controller->GetSimPlayerId()));
+	for (const TPair<int32, TObjectPtr<UPossessableComponent>>& Pair : HostComponents)
+	{
+		UPossessableComponent* Host = Pair.Value.Get();
+		if (!Host || Host->Mobility != EHostMobility::Hinge || !Host->GetOwner())
 		{
-			PC->ResetForNewMatch();
+			continue;
+		}
+		if (FVector::Dist(Host->GetOwner()->GetActorLocation(), Origin) <= 260.f)
+		{
+			if (APossessablePawn* Door = Cast<APossessablePawn>(Host->GetOwner()))
+			{
+				Door->ToggleHinge();
+				Controller->ClientNotify(TEXT("DOOR"), 1.f);
+				return;
+			}
 		}
 	}
-	EnterPhase(EMatchPhase::Countdown);
+	RequestPossess(Controller);
+}
+
+void AParasiteGameMode::RequestScan(AParasitePlayerController* Controller)
+{
+	if (!Controller)
+	{
+		return;
+	}
+	std::vector<Parasite::HostId> Revealed;
+	if (!Sim.TryScan(Controller->GetSimPlayerId(), Revealed))
+	{
+		Controller->ClientNotify(TEXT("SCAN ON COOLDOWN"), 1.5f);
+		Controller->ClientPlaySound(static_cast<uint8>(EParasiteSound::PossessFail));
+		return;
+	}
+
+	Controller->ClientPlaySound(static_cast<uint8>(EParasiteSound::ScanPulse));
+	FParasiteAudio::Play(this, EParasiteSound::ScanPulse, FromCore(Sim.GetPlayerPresence(Controller->GetSimPlayerId())));
+
+	for (Parasite::HostId Id : Revealed)
+	{
+		const Parasite::FHost* SimHost = Sim.FindHost(Id);
+		if (!SimHost)
+		{
+			continue;
+		}
+		Controller->ClientAddMarker(FromCore(SimHost->Location), FColor(255, 25, 150), TEXT("PARASITE"), Sim.GetRules().ScanRevealTime);
+
+		// The hunted feel the ping too. That is the whole mind game.
+		if (AParasitePlayerController* Prey = FindController(SimHost->Rider))
+		{
+			Prey->ClientNotify(TEXT("YOU WERE SCANNED"), 1.5f);
+			Prey->ClientPlaySound(static_cast<uint8>(EParasiteSound::Detected));
+		}
+	}
+	const FString Summary = Revealed.empty()
+		? FString(TEXT("SCAN: CLEAR"))
+		: FString::Printf(TEXT("SCAN: %d CONTACT(S)"), static_cast<int32>(Revealed.size()));
+	Controller->ClientNotify(Summary, 1.8f);
+}
+
+void AParasiteGameMode::RequestLeap(AParasitePlayerController* Controller, const FVector& Direction)
+{
+	AParasiteCharacter* Body = Controller ? Controller->ParasiteBody.Get() : nullptr;
+	if (!Body || !Sim.TryLeap(Controller->GetSimPlayerId()))
+	{
+		return;
+	}
+
+	// Snap towards a host in leap range if the player is roughly facing one.
+	FVector LaunchDir = Direction.GetSafeNormal();
+	const FVector Origin = Body->GetActorLocation();
+	float BestDistanceSq = FMath::Square(Sim.GetRules().LeapRange);
+	for (const TPair<int32, TObjectPtr<UPossessableComponent>>& Pair : HostComponents)
+	{
+		const UPossessableComponent* Host = Pair.Value.Get();
+		const Parasite::FHost* SimHost = Sim.FindHost(Pair.Key);
+		if (!Host || !Host->GetOwner() || !SimHost || SimHost->bPossessed)
+		{
+			continue;
+		}
+		const FVector ToTarget = Host->GetOwner()->GetActorLocation() - Origin;
+		if (ToTarget.SizeSquared() < BestDistanceSq && FVector::DotProduct(ToTarget.GetSafeNormal(), LaunchDir) > 0.35f)
+		{
+			BestDistanceSq = ToTarget.SizeSquared();
+			LaunchDir = ToTarget.GetSafeNormal();
+		}
+	}
+
+	Body->LaunchCharacter(LaunchDir * 900.f + FVector(0.f, 0.f, 420.f), true, true);
+	FParasiteAudio::Play(this, EParasiteSound::ParasiteMove, Origin);
+}
+
+void AParasiteGameMode::RequestResist(AParasitePlayerController* Controller)
+{
+	if (!Controller)
+	{
+		return;
+	}
+	if (Sim.AddResist(Controller->GetSimPlayerId()))
+	{
+		Controller->ClientNotify(TEXT("YOU FORCED IT OUT"), 2.f);
+		ApplyPossessionChanges();
+	}
+}
+
+void AParasiteGameMode::RequestUpgrade(AParasitePlayerController* Controller, EParasiteUpgrade Upgrade)
+{
+	if (!Controller)
+	{
+		return;
+	}
+	const bool bBought = Sim.TryPurchaseUpgrade(Controller->GetSimPlayerId(), ToCore(Upgrade));
+	Controller->ClientNotify(bBought ? TEXT("EVOLVED") : TEXT("CANNOT EVOLVE (DNA / LIMIT)"), 2.f);
+	Controller->ClientPlaySound(static_cast<uint8>(bBought ? EParasiteSound::Possess : EParasiteSound::PossessFail));
+}
+
+void AParasiteGameMode::RequestPing(AParasitePlayerController* Controller, const FVector& Location)
+{
+	const AParasitePlayerState* PS = Controller ? Controller->GetParasitePlayerState() : nullptr;
+	if (!PS)
+	{
+		return;
+	}
+	// A player controller is only relevant to its owner, so a multicast would not
+	// reach the rest of the team: send each team mate their own copy.
+	for (FConstPlayerControllerIterator It = GetWorld()->GetPlayerControllerIterator(); It; ++It)
+	{
+		AParasitePlayerController* Other = Cast<AParasitePlayerController>(It->Get());
+		const AParasitePlayerState* OtherPS = Other ? Other->GetParasitePlayerState() : nullptr;
+		if (OtherPS && OtherPS->Team == PS->Team)
+		{
+			Other->ClientAddMarker(Location, FColor(255, 220, 60), TEXT("PING"), 8.f);
+			Other->ClientPlaySound(static_cast<uint8>(EParasiteSound::UIClick));
+		}
+	}
+}
+
+void AParasiteGameMode::RequestRematch()
+{
+	Sim.RestartMatch();
+	ApplyPossessionChanges();
 }

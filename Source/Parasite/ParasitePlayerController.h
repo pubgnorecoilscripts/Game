@@ -8,12 +8,11 @@
 
 class AParasiteCharacter;
 class AParasitePlayerState;
-class UPossessableComponent;
 class AParasiteHUD;
 
 /**
- * Owns all player intent. Clients only ever *ask* - every state change below
- * happens on the server and replicates back.
+ * Owns player intent and nothing else. Every action below is a request to the
+ * server, which asks the match simulation and applies whatever it decides.
  */
 UCLASS()
 class PARASITE_API AParasitePlayerController : public APlayerController
@@ -24,38 +23,42 @@ public:
 	AParasitePlayerController();
 
 	virtual void SetupInputComponent() override;
+	virtual void PlayerTick(float DeltaTime) override;
+	virtual void OnPossess(APawn* InPawn) override;
+	virtual void BeginPlay() override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+
 #if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6)
 	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
 #else
 	virtual bool InputKey(const FInputKeyParams& Params) override;
 #endif
-	virtual void PlayerTick(float DeltaTime) override;
-	virtual void OnPossess(APawn* InPawn) override;
-	virtual void OnUnPossess() override;
-	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-	virtual void BeginPlay() override;
 
-	/** The player's own parasite body. Kept alive (dormant) while riding a host. */
+	/** The player's own parasite body, kept alive while riding another host. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
 	TObjectPtr<AParasiteCharacter> ParasiteBody = nullptr;
 
-	/** The enemy parasite this player is currently hijacking, if any. */
+	/** The enemy parasite this player is currently driving, if any. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
 	TObjectPtr<AParasiteCharacter> HijackVictim = nullptr;
 
-	/** Server: register the parasite body spawned for this player. */
 	void SetParasiteBody(AParasiteCharacter* Body);
+	void SetHijackVictim(AParasiteCharacter* Victim);
 
-	/** Server: forcibly return this player to their own body (timeout, resist, death, match end). */
-	void ServerExitPossession(bool bWasExpelled);
-
-	/** Server: drop everything and get ready for a fresh match. */
-	void ResetForNewMatch();
+	/** This controller's id inside the match simulation. Server side. */
+	int32 GetSimPlayerId() const { return SimPlayerId; }
+	void SetSimPlayerId(int32 InId) { SimPlayerId = InId; }
 
 	AParasitePlayerState* GetParasitePlayerState() const;
 	AParasiteHUD* GetParasiteHUD() const;
 
-	/** Client feedback. */
+	/** True while a menu owns the input, so gameplay keys are ignored. */
+	bool IsInputBlocked() const;
+
+	/** Menu state, client side only. */
+	bool bMenuOpen = false;
+
+	// --- Client feedback -------------------------------------------------
 	UFUNCTION(Client, Reliable)
 	void ClientNotify(const FString& Message, float Duration);
 
@@ -65,17 +68,12 @@ public:
 	UFUNCTION(Client, Reliable)
 	void ClientAddMarker(FVector Location, FColor Colour, const FString& Label, float Duration);
 
-	/** True when this player is currently riding anything. */
-	bool IsPossessing() const;
-
-	/** Menu state (client only). */
-	bool bMenuOpen = false;
-
-	/** True while a menu owns the input, so gameplay keys are ignored. */
-	bool IsInputBlocked() const;
+	/** Asks the server for an immediate rematch (the post-match button). */
+	UFUNCTION(Server, Reliable)
+	void ServerRequestRematch();
 
 protected:
-	// --- Input handlers -------------------------------------------------
+	// --- Input handlers ---------------------------------------------------
 	void OnMoveForward(float Value);
 	void OnMoveRight(float Value);
 	void OnTurn(float Value);
@@ -87,7 +85,7 @@ protected:
 	void OnSprintPressed();
 	void OnSprintReleased();
 	void OnCrouchToggle();
-	void OnPossessPressed();
+	void OnInteractPressed();
 	void OnExitPressed();
 	void OnLeapPressed();
 	void OnScanPressed();
@@ -101,9 +99,9 @@ protected:
 	void OnMenuToggle();
 	void OnMenuClick();
 
-	// --- Server RPCs ----------------------------------------------------
+	// --- Server RPCs -------------------------------------------------------
 	UFUNCTION(Server, Reliable)
-	void ServerRequestPossess();
+	void ServerRequestInteract();
 
 	UFUNCTION(Server, Reliable)
 	void ServerRequestExit();
@@ -123,33 +121,17 @@ protected:
 	UFUNCTION(Server, Reliable)
 	void ServerRequestUpgrade(EParasiteUpgrade Upgrade);
 
-public:
-	/** Asks the server for an immediate rematch (post-match screen button). */
-	UFUNCTION(Server, Reliable)
-	void ServerRequestRematch();
-
-protected:
-
-	/** Prop hosts have no client prediction, so the server drives them. */
+	/** Props have no client prediction, so the server drives them. */
 	UFUNCTION(Server, Unreliable)
 	void ServerDriveHost(float Forward, float Right);
 
-	/** Hijack driving: the client sends intent, the server moves the victim. */
+	/** Hijack steering: the client sends intent, the server moves the victim. */
 	UFUNCTION(Server, Unreliable)
 	void ServerHijackInput(float Forward, float Right, float YawDelta);
 
 private:
-	/** Server: pick the best host in range of the player's current body. */
-	UPossessableComponent* FindBestTarget(float& OutDistance) const;
-
-	/** Server: enter a host. Handles both real possession and enemy hijack. */
-	bool EnterHost(UPossessableComponent* Target);
-
-	/** The actor that represents this player in the world right now. */
-	AActor* GetBodyActor() const;
-
+	int32 SimPlayerId = -1;
 	float CachedForward = 0.f;
 	float CachedRight = 0.f;
 	float CachedYawDelta = 0.f;
-	bool bSprinting = false;
 };

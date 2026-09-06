@@ -6,8 +6,10 @@
 #include "MallBuilder.generated.h"
 
 class UStaticMeshComponent;
+class UDirectionalLightComponent;
+class USkyLightComponent;
 
-/** Plain coloured block. The whole mall is made of these. */
+/** A plain coloured block. The whole mall is made of these. */
 UCLASS()
 class PARASITE_API AMallBlock : public AActor
 {
@@ -26,7 +28,7 @@ private:
 	TObjectPtr<UStaticMesh> SphereAsset;
 };
 
-/** Sun + sky. Created at runtime, so both light components are movable. */
+/** Sun, sky and a fill light. Spawned at runtime, so all of it is movable. */
 UCLASS()
 class PARASITE_API AMallLighting : public AActor
 {
@@ -36,16 +38,16 @@ public:
 	AMallLighting();
 
 	UPROPERTY(VisibleAnywhere, Category = "Parasite")
-	TObjectPtr<class UDirectionalLightComponent> Sun;
+	TObjectPtr<UDirectionalLightComponent> Sun;
 
 	UPROPERTY(VisibleAnywhere, Category = "Parasite")
-	TObjectPtr<class USkyLightComponent> Sky;
+	TObjectPtr<USkyLightComponent> Sky;
 
 	UPROPERTY(VisibleAnywhere, Category = "Parasite")
-	TObjectPtr<class UDirectionalLightComponent> Fill;
+	TObjectPtr<UDirectionalLightComponent> Fill;
 };
 
-/** A lift platform. Server driven so every client sees the same ride. */
+/** The lift. Server driven, so every client sees the same ride. */
 UCLASS()
 class PARASITE_API AMallElevator : public AActor
 {
@@ -71,11 +73,10 @@ private:
 };
 
 /**
- * Builds the abandoned shopping mall.
+ * Builds the abandoned shopping mall, roughly 200 m x 200 m over two floors.
  *
- * Static scenery is built identically on every machine (no replication cost);
- * gameplay actors - possessable props, NPCs, vehicles, nests - are spawned by
- * the server only and replicate down.
+ * Scenery is built identically on every machine and never replicated; anything
+ * with gameplay meaning is spawned by the server only.
  */
 UCLASS()
 class PARASITE_API UMallBuilder : public UObject
@@ -83,18 +84,17 @@ class PARASITE_API UMallBuilder : public UObject
 	GENERATED_BODY()
 
 public:
-	/** Runs on server and clients. Idempotent per world. */
+	/** Runs on the server and on every client. Idempotent per world. */
 	static void BuildStaticGeometry(UWorld* World);
 
-	/** Server only. Spawns everything that has gameplay meaning. */
+	/** Server only: props, NPCs, vehicles, doors, the lift. */
 	static void SpawnGameplayActors(UWorld* World);
 
-	/** Spawn point for a player, spread around that team's home area. */
 	static FVector GetTeamSpawn(EParasiteTeam Team, int32 PlayerIndex);
 
-	/** One of several hiding spots, chosen per match by the game mode's seed. */
+	/** One of four hiding places per side, picked by the match seed. */
 	static FVector GetNestLocation(EParasiteTeam Team, int32 Seed);
 
-	/** True if the location sits inside the enemy's restricted back-of-house. */
-	static bool IsRestrictedArea(const FVector& Location, EParasiteTeam ForTeam);
+	/** The enemy back of house that ForTeam earns an infiltration bonus in. */
+	static void GetRestrictedZone(EParasiteTeam ForTeam, FVector& OutMin, FVector& OutMax);
 };

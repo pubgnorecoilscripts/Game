@@ -1,5 +1,7 @@
 #include "PossessableComponent.h"
+#include "ParasiteGameMode.h"
 #include "ParasitePlayerState.h"
+#include "ParasiteRevealable.h"
 #include "Net/UnrealNetwork.h"
 
 UPossessableComponent::UPossessableComponent()
@@ -18,72 +20,42 @@ void UPossessableComponent::GetLifetimeReplicatedProps(TArray<FLifetimeProperty>
 	DOREPLIFETIME(UPossessableComponent, CameraHeight);
 	DOREPLIFETIME(UPossessableComponent, bPossessed);
 	DOREPLIFETIME(UPossessableComponent, Rider);
-	DOREPLIFETIME(UPossessableComponent, PossessionEndTime);
+	DOREPLIFETIME(UPossessableComponent, PossessionTimeRemaining);
+	DOREPLIFETIME(UPossessableComponent, bRevealed);
 }
 
-float UPossessableComponent::GetMaxDuration(const AParasitePlayerState* ForPlayer) const
+void UPossessableComponent::BeginPlay()
 {
-	switch (HostType)
+	Super::BeginPlay();
+
+	// The server is the only machine that runs the simulation, so it is the only
+	// one that registers hosts.
+	if (GetOwnerRole() == ROLE_Authority && !bManagedExternally)
 	{
-	case EHostType::NPC:
-		return ParasiteRules::NPCDuration;
-	case EHostType::Player:
-		return ParasiteRules::PlayerDuration +
-			((ForPlayer && ForPlayer->HasUpgrade(EParasiteUpgrade::Mimic)) ? ParasiteRules::MimicDurationBonus : 0.f);
-	case EHostType::Vehicle:
-	case EHostType::Prop:
-	default:
-		return ParasiteRules::PropDuration;
+		if (AParasiteGameMode* GameMode = AParasiteGameMode::Get(this))
+		{
+			GameMode->RegisterHost(this);
+		}
 	}
 }
 
-bool UPossessableComponent::CanBePossessedBy(const AParasitePlayerState* ByPlayer) const
+void UPossessableComponent::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
-	if (bPossessed || !IsValid(GetOwner()) || GetOwner()->IsActorBeingDestroyed())
+	if (GetOwnerRole() == ROLE_Authority && !bManagedExternally && HostId != Parasite::InvalidHost)
 	{
-		return false;
+		if (AParasiteGameMode* GameMode = AParasiteGameMode::Get(this))
+		{
+			GameMode->UnregisterHost(this);
+		}
 	}
-	if (!ByPlayer)
-	{
-		return false;
-	}
-	// A parasite may never possess a host ridden by a team mate, nor an ally player.
-	if (Rider && Rider->GetTeam() == ByPlayer->GetTeam())
-	{
-		return false;
-	}
-	return true;
+	Super::EndPlay(EndPlayReason);
 }
 
-void UPossessableComponent::BeginPossession(AParasitePlayerState* ByPlayer)
+void UPossessableComponent::OnRep_Revealed()
 {
-	if (GetOwnerRole() != ROLE_Authority)
+	// The owning actor decides what "revealed" looks like.
+	if (IParasiteRevealable* Revealable = Cast<IParasiteRevealable>(GetOwner()))
 	{
-		return;
-	}
-	bPossessed = true;
-	Rider = ByPlayer;
-	const UWorld* World = GetWorld();
-	PossessionEndTime = (World ? World->GetTimeSeconds() : 0.f) + GetMaxDuration(ByPlayer);
-}
-
-void UPossessableComponent::EndPossession()
-{
-	if (GetOwnerRole() != ROLE_Authority)
-	{
-		return;
-	}
-	bPossessed = false;
-	Rider = nullptr;
-	PossessionEndTime = 0.f;
-}
-
-int32 UPossessableComponent::GetDNAReward() const
-{
-	switch (HostType)
-	{
-	case EHostType::Player:	return ParasiteRules::DNA_PossessEnemy;
-	case EHostType::NPC:	return ParasiteRules::DNA_PossessHost * 2;
-	default:				return ParasiteRules::DNA_PossessHost;
+		Revealable->OnRevealChanged(bRevealed);
 	}
 }

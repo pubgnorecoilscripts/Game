@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "GameFramework/Pawn.h"
 #include "ParasiteTypes.h"
+#include "ParasiteRevealable.h"
 #include "PossessablePawn.generated.h"
 
 class UStaticMeshComponent;
@@ -10,26 +11,29 @@ class UFloatingPawnMovement;
 class USpringArmComponent;
 class UCameraComponent;
 class UPossessableComponent;
+class UMaterialInstanceDynamic;
 
 /**
- * Every possessable mall object is one of these. The mobility profile decides how
- * it behaves when driven, so a new possessable only needs a call to Configure().
+ * Every possessable mall object is one of these. Adding a new kind of host is a
+ * single Configure() call - the mobility profile decides how it drives.
  */
 UCLASS()
-class PARASITE_API APossessablePawn : public APawn
+class PARASITE_API APossessablePawn : public APawn, public IParasiteRevealable
 {
 	GENERATED_BODY()
 
 public:
 	APossessablePawn();
 
-	virtual void Tick(float DeltaSeconds) override;
 	virtual void BeginPlay() override;
+	virtual void Tick(float DeltaSeconds) override;
+	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
+	virtual void OnRevealChanged(bool bRevealed) override;
 
 	UPROPERTY(VisibleAnywhere, Category = "Parasite")
 	TObjectPtr<UStaticMeshComponent> Mesh;
 
-	/** Optional second block, e.g. a chair back or a cart basket. */
+	/** Optional second block: a chair back, a cart basket, a car roof. */
 	UPROPERTY(VisibleAnywhere, Category = "Parasite")
 	TObjectPtr<UStaticMeshComponent> Detail;
 
@@ -45,15 +49,19 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "Parasite")
 	TObjectPtr<UPossessableComponent> Possessable;
 
-	/**
-	 * Sets up mesh, size, colour and host behaviour. Called by the mall builder on
-	 * the server; the values that matter visually are replicated.
-	 */
+	/** Sets up size, colour and host behaviour. Server side; the look replicates. */
 	void Configure(const FString& DisplayName, EHostType InHostType, EHostMobility InMobility,
-		const FVector& BoxExtent, const FLinearColor& Colour, const FVector& DetailOffset = FVector::ZeroVector,
-		const FVector& DetailExtent = FVector::ZeroVector);
+		const FVector& BoxExtent, const FLinearColor& Colour,
+		const FVector& DetailOffset = FVector::ZeroVector, const FVector& DetailExtent = FVector::ZeroVector);
 
-	/** Replicated visual description so late joiners and clients build the same prop. */
+	/** Driven by the player controller; behaviour depends on the mobility profile. */
+	void DriveForward(float Value);
+	void DriveRight(float Value);
+
+	/** Hinge props (doors) swing instead of driving. */
+	void ToggleHinge();
+
+	// --- Replicated description, so clients build the same prop ----------
 	UPROPERTY(ReplicatedUsing = OnRep_Visual)
 	FVector VisualExtent = FVector(50.f, 50.f, 50.f);
 
@@ -69,35 +77,17 @@ public:
 	UFUNCTION()
 	void OnRep_Visual();
 
-	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-
-	/** Highlight this host for a short time (scan reveal). Client-side visual. */
-	void SetRevealed(float Seconds);
-
-	/** Hinge props (doors) toggle instead of driving. */
-	void ToggleHinge();
-
-	/** Driven by the player controller; behaviour depends on the mobility profile. */
-	void DriveForward(float Value);
-	void DriveRight(float Value);
-
 private:
 	void ApplyVisuals();
 
 	UPROPERTY()
-	TObjectPtr<class UMaterialInstanceDynamic> MeshMaterial;
+	TObjectPtr<UMaterialInstanceDynamic> MeshMaterial;
 
 	UPROPERTY()
-	TObjectPtr<class UMaterialInstanceDynamic> DetailMaterial;
+	TObjectPtr<UMaterialInstanceDynamic> DetailMaterial;
 
-	float RevealEndTime = 0.f;
-	bool bRevealApplied = false;
-
-	/** Hinge state. */
 	bool bHingeOpen = false;
 	float HingeAlpha = 0.f;
 	float HingeClosedYaw = 0.f;
-
-	/** Idle wobble accumulator for static hosts. */
 	float WobbleTime = 0.f;
 };

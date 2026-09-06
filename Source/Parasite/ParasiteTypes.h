@@ -1,9 +1,15 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Core/ParasiteRules.h"
 #include "ParasiteTypes.generated.h"
 
-/** Which team a player belongs to. */
+/**
+ * Blueprint/replication facing mirrors of the core enums. The values match
+ * Parasite::E* exactly, so conversion is a cast in both directions - see the
+ * helpers at the bottom of this file.
+ */
+
 UENUM(BlueprintType)
 enum class EParasiteTeam : uint8
 {
@@ -12,7 +18,6 @@ enum class EParasiteTeam : uint8
 	TeamB	UMETA(DisplayName = "Team B")
 };
 
-/** Broad category of a possession host. Drives duration and DNA rewards. */
 UENUM(BlueprintType)
 enum class EHostType : uint8
 {
@@ -22,18 +27,16 @@ enum class EHostType : uint8
 	Player	UMETA(DisplayName = "Enemy Player")
 };
 
-/** How a possessed host is allowed to move. */
 UENUM(BlueprintType)
 enum class EHostMobility : uint8
 {
-	Static		UMETA(DisplayName = "Static"),		// plants, vending machines: wobble only
-	Slide		UMETA(DisplayName = "Slide"),		// chairs, tables, bins
-	Wheeled		UMETA(DisplayName = "Wheeled"),		// carts, cars
-	Walk		UMETA(DisplayName = "Walk"),		// NPCs and players
-	Hinge		UMETA(DisplayName = "Hinge")		// doors
+	Static	UMETA(DisplayName = "Static"),		// plants, vending machines: wobble only
+	Slide	UMETA(DisplayName = "Slide"),		// chairs, tables, bins
+	Wheeled	UMETA(DisplayName = "Wheeled"),		// carts, cars
+	Walk	UMETA(DisplayName = "Walk"),		// NPCs and players
+	Hinge	UMETA(DisplayName = "Hinge")		// doors
 };
 
-/** Match phase, replicated on the game state. */
 UENUM(BlueprintType)
 enum class EMatchPhase : uint8
 {
@@ -43,18 +46,17 @@ enum class EMatchPhase : uint8
 	PostMatch	UMETA(DisplayName = "Post Match")
 };
 
-/** The three in-match evolution upgrades. */
 UENUM(BlueprintType)
 enum class EParasiteUpgrade : uint8
 {
 	None		UMETA(DisplayName = "None"),
-	Jumper		UMETA(DisplayName = "Jumper"),		// +possession range
-	Mimic		UMETA(DisplayName = "Mimic"),		// +enemy possession duration
-	Infiltrator	UMETA(DisplayName = "Infiltrator")	// harder to detect while possessing
+	Jumper		UMETA(DisplayName = "Jumper"),
+	Mimic		UMETA(DisplayName = "Mimic"),
+	Infiltrator	UMETA(DisplayName = "Infiltrator")
 };
 
 /** A transient world marker (ping or scan hit) drawn on the HUD. */
-USTRUCT(BlueprintType)
+USTRUCT()
 struct FParasiteMarker
 {
 	GENERATED_BODY()
@@ -72,40 +74,30 @@ struct FParasiteMarker
 	FString Label;
 };
 
-/** Global tuning. Central so designers only touch one place. */
-namespace ParasiteRules
+// --- Conversions -----------------------------------------------------------
+// The mirrors are declared in the same order as the core enums, so these are
+// plain casts. The static_asserts make sure that stays true.
+
+static_assert(static_cast<uint8>(EParasiteTeam::TeamB) == static_cast<uint8>(Parasite::ETeam::B), "team enums drifted");
+static_assert(static_cast<uint8>(EHostType::Player) == static_cast<uint8>(Parasite::EHostType::Player), "host type enums drifted");
+static_assert(static_cast<uint8>(EHostMobility::Hinge) == static_cast<uint8>(Parasite::EHostMobility::Hinge), "mobility enums drifted");
+static_assert(static_cast<uint8>(EMatchPhase::PostMatch) == static_cast<uint8>(Parasite::EMatchPhase::PostMatch), "phase enums drifted");
+static_assert(static_cast<uint8>(EParasiteUpgrade::Infiltrator) == static_cast<uint8>(Parasite::EUpgrade::Infiltrator), "upgrade enums drifted");
+
+FORCEINLINE Parasite::ETeam ToCore(EParasiteTeam Team) { return static_cast<Parasite::ETeam>(Team); }
+FORCEINLINE EParasiteTeam FromCore(Parasite::ETeam Team) { return static_cast<EParasiteTeam>(Team); }
+
+FORCEINLINE Parasite::EHostType ToCore(EHostType Type) { return static_cast<Parasite::EHostType>(Type); }
+FORCEINLINE EHostType FromCore(Parasite::EHostType Type) { return static_cast<EHostType>(Type); }
+
+FORCEINLINE Parasite::EHostMobility ToCore(EHostMobility Mobility) { return static_cast<Parasite::EHostMobility>(Mobility); }
+FORCEINLINE EHostMobility FromCore(Parasite::EHostMobility Mobility) { return static_cast<EHostMobility>(Mobility); }
+
+FORCEINLINE EMatchPhase FromCore(Parasite::EMatchPhase Phase) { return static_cast<EMatchPhase>(Phase); }
+FORCEINLINE Parasite::EUpgrade ToCore(EParasiteUpgrade Upgrade) { return static_cast<Parasite::EUpgrade>(Upgrade); }
+
+FORCEINLINE FVector FromCore(const Parasite::FVec3& Vector) { return FVector(Vector.X, Vector.Y, Vector.Z); }
+FORCEINLINE Parasite::FVec3 ToCore(const FVector& Vector)
 {
-	static constexpr float BasePossessRange		= 300.f;	// 3 m
-	static constexpr float JumperRangeBonus		= 250.f;	// Jumper upgrade
-	static constexpr float PropDuration			= 30.f;
-	static constexpr float NPCDuration			= 45.f;
-	static constexpr float PlayerDuration		= 8.f;
-	static constexpr float MimicDurationBonus	= 4.f;
-	static constexpr float PossessCooldown		= 3.f;
-	static constexpr float ScanCooldown			= 20.f;
-	static constexpr float ScanRadius			= 2200.f;
-	static constexpr float ScanRevealTime		= 1.5f;
-	static constexpr float InfiltratorScanScale	= 0.45f;	// scan radius multiplier vs. this player
-	static constexpr float LeapRange			= 900.f;
-	static constexpr float LeapCooldown			= 2.5f;
-
-	static constexpr float NestInfectSeconds	= 20.f;		// uninterrupted seconds for 100%
-	static constexpr float NestResetOnExpel		= 35.f;		// percent lost when expelled
-	static constexpr float NestRadius			= 350.f;
-	static constexpr float NestPulseInterval	= 6.f;
-	static constexpr float NestPulseRadius		= 700.f;
-
-	static constexpr float MatchDuration		= 900.f;	// 15 minutes
-	static constexpr float CountdownDuration	= 5.f;
-	static constexpr float PostMatchDuration	= 15.f;
-
-	static constexpr int32 DNA_PossessEnemy		= 40;
-	static constexpr int32 DNA_Infiltrate		= 25;
-	static constexpr int32 DNA_NestTick			= 10;
-	static constexpr int32 DNA_PossessHost		= 5;
-	static constexpr int32 DNA_ExpelParasite	= 30;
-	static constexpr int32 UpgradeCost			= 60;
-	static constexpr int32 MaxUpgrades			= 2;
-
-	static constexpr int32 MaxPlayers			= 10;
+	return Parasite::FVec3(static_cast<float>(Vector.X), static_cast<float>(Vector.Y), static_cast<float>(Vector.Z));
 }

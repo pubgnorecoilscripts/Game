@@ -9,7 +9,7 @@ class AParasitePlayerController;
 class AParasitePlayerState;
 class AParasiteGameState;
 
-/** One clickable rectangle in the menu, rebuilt every frame. */
+/** One clickable rectangle, rebuilt every frame. */
 struct FParasiteButton
 {
 	FString Label;
@@ -18,9 +18,7 @@ struct FParasiteButton
 	int32 Id = 0;
 };
 
-/**
- * Canvas HUD. Everything is drawn in code so the project needs no UMG assets.
- */
+/** Canvas HUD, so the project needs no UMG assets. */
 UCLASS()
 class PARASITE_API AParasiteHUD : public AHUD
 {
@@ -38,41 +36,42 @@ public:
 	/** True while any menu wants the mouse cursor. */
 	bool IsMenuActive() const;
 
-	/** Called by the controller on left click while a menu is open. */
+	/** Called by the controller on a left click while a menu is up. */
 	void HandleMenuClick();
 
-	/** Feeds typed characters into the join-address field. Returns true if consumed. */
+	/** Feeds typed characters into the join address field. True if consumed. */
 	bool HandleTextInput(const FKey& Key);
 
 	bool bShowScoreboard = false;
 
-	/** The front end is up until the player picks PLAY / HOST / JOIN. */
+	/** The front end is up until the player picks PLAY, HOST or JOIN. */
 	bool bMainMenuOpen = true;
-
 	bool bSettingsOpen = false;
 	bool bJoinEditing = false;
 
 	FString JoinAddress = TEXT("127.0.0.1");
-
 	float MouseSensitivity = 1.f;
 
 private:
 	void DrawMatchBar();
 	void DrawPlayerBar();
 	void DrawMarkers();
-	void DrawMessages();
+	void DrawMessage();
+	void DrawCrosshair();
 	void DrawScoreboard();
 	void DrawMainMenu();
 	void DrawSettings();
 	void DrawEndScreen();
-	void DrawCrosshair();
+	void DrawPauseMenu();
 
 	void DrawPanel(float X, float Y, float Width, float Height, const FLinearColor& Colour);
 	void DrawLabel(const FString& Text, float X, float Y, const FLinearColor& Colour, float Scale = 1.f, bool bCentre = false);
-	void AddButton(const FString& Label, float X, float Y, float Width, float Height, int32 Id);
 	void DrawBar(float X, float Y, float Width, float Height, float Fraction, const FLinearColor& Colour);
+	void AddButton(const FString& Label, float X, float Y, float Width, float Height, int32 Id);
 
-	AParasitePlayerController* GetOwningController() const;
+	void LeaveMenus();
+
+	AParasitePlayerController* GetOwningParasiteController() const;
 	AParasitePlayerState* GetOwningState() const;
 	AParasiteGameState* GetParasiteGameState() const;
 

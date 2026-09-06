@@ -6,10 +6,10 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
 #include "Materials/Material.h"
-#include "Engine/StaticMesh.h"
 #include "Materials/MaterialInstanceDynamic.h"
-#include "UObject/ConstructorHelpers.h"
+#include "Engine/StaticMesh.h"
 #include "AIController.h"
+#include "UObject/ConstructorHelpers.h"
 #include "Net/UnrealNetwork.h"
 
 AParasiteNPC::AParasiteNPC()
@@ -17,6 +17,9 @@ AParasiteNPC::AParasiteNPC()
 	PrimaryActorTick.bCanEverTick = true;
 	bReplicates = true;
 	SetReplicateMovement(true);
+
+	// An AI controller so character movement will actually drive it; a player
+	// possession takes the pawn off this controller and hands it back on exit.
 	AutoPossessAI = EAutoPossessAI::PlacedInWorldOrSpawned;
 	AIControllerClass = AAIController::StaticClass();
 
@@ -77,7 +80,6 @@ AParasiteNPC::AParasiteNPC()
 	Move->bOrientRotationToMovement = true;
 	Move->RotationRate = FRotator(0.f, 420.f, 0.f);
 	Move->MaxWalkSpeed = 240.f;
-	Move->bUseControllerDesiredRotation = false;
 }
 
 void AParasiteNPC::BeginPlay()
@@ -106,24 +108,19 @@ void AParasiteNPC::OnRep_Colour()
 	}
 }
 
-void AParasiteNPC::SetRevealed(float Seconds)
+void AParasiteNPC::OnRevealChanged(bool bRevealed)
 {
-	RevealEndTime = (GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f) + Seconds;
+	if (BodyMaterial)
+	{
+		BodyMaterial->SetVectorParameterValue(TEXT("Color"), bRevealed ? FLinearColor(1.f, 0.1f, 0.6f) : ShirtColour);
+	}
 }
 
 void AParasiteNPC::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
-	const bool bShouldReveal = Now < RevealEndTime;
-	if (bShouldReveal != bRevealApplied && BodyMaterial)
-	{
-		bRevealApplied = bShouldReveal;
-		BodyMaterial->SetVectorParameterValue(TEXT("Color"), bShouldReveal ? FLinearColor(1.f, 0.1f, 0.6f) : ShirtColour);
-	}
-
-	// The server drives the idle brain; possessed NPCs are driven by their player.
+	// The server walks unpossessed shoppers; possessed ones are driven by a player.
 	if (HasAuthority() && !IsPlayerControlled())
 	{
 		TickIdleBrain(DeltaSeconds);
@@ -142,14 +139,13 @@ void AParasiteNPC::TickIdleBrain(float DeltaSeconds)
 		return;
 	}
 
-	const FVector Target = Waypoints[WaypointIndex % Waypoints.Num()];
-	FVector ToTarget = Target - GetActorLocation();
+	FVector ToTarget = Waypoints[WaypointIndex % Waypoints.Num()] - GetActorLocation();
 	ToTarget.Z = 0.f;
 
 	if (ToTarget.SizeSquared() < FMath::Square(90.f))
 	{
 		WaypointIndex = (WaypointIndex + 1) % Waypoints.Num();
-		IdleTimer = FMath::FRandRange(1.f, 4.f);		// stop and look at nothing for a while
+		IdleTimer = FMath::FRandRange(1.f, 4.f);		// stop and stare at a shuttered shop
 		StuckTimer = 0.f;
 		return;
 	}
@@ -169,8 +165,7 @@ void AParasiteNPC::DriveForward(float Value)
 {
 	if (!FMath::IsNearlyZero(Value))
 	{
-		const FRotator Yaw(0.f, GetControlRotation().Yaw, 0.f);
-		AddMovementInput(FRotationMatrix(Yaw).GetUnitAxis(EAxis::X), Value);
+		AddMovementInput(FRotationMatrix(FRotator(0.f, GetControlRotation().Yaw, 0.f)).GetUnitAxis(EAxis::X), Value);
 	}
 }
 
@@ -178,8 +173,6 @@ void AParasiteNPC::DriveRight(float Value)
 {
 	if (!FMath::IsNearlyZero(Value))
 	{
-		const FRotator Yaw(0.f, GetControlRotation().Yaw, 0.f);
-		AddMovementInput(FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y), Value);
+		AddMovementInput(FRotationMatrix(FRotator(0.f, GetControlRotation().Yaw, 0.f)).GetUnitAxis(EAxis::Y), Value);
 	}
 }
-

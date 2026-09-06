@@ -6,14 +6,15 @@
 #include "GameFramework/SpringArmComponent.h"
 #include "Camera/CameraComponent.h"
 #include "Materials/Material.h"
-#include "Engine/StaticMesh.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/World.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Net/UnrealNetwork.h"
 
 namespace
 {
-	/** Cube is 100 uu on a side, so extent -> scale is a straight divide. */
+	/** The engine cube is 100 uu on a side, so extent to scale is a divide. */
 	FVector ExtentToScale(const FVector& Extent)
 	{
 		return FVector(FMath::Max(Extent.X, 1.f), FMath::Max(Extent.Y, 1.f), FMath::Max(Extent.Z, 1.f)) / 50.f;
@@ -33,8 +34,7 @@ APossessablePawn::APossessablePawn()
 	Mesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Mesh"));
 	SetRootComponent(Mesh);
 	Mesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
-	Mesh->SetCollisionObjectType(ECC_PhysicsBody);
-	Mesh->SetCollisionResponseToAllChannels(ECR_Block);
+	Mesh->SetCollisionProfileName(TEXT("Pawn"));
 	Mesh->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
 	if (CubeMesh.Succeeded())
 	{
@@ -63,9 +63,8 @@ APossessablePawn::APossessablePawn()
 	CameraBoom->TargetArmLength = 350.f;
 	CameraBoom->bUsePawnControlRotation = true;
 	CameraBoom->bDoCollisionTest = true;
-	CameraBoom->bInheritPitch = true;
-	CameraBoom->bInheritYaw = true;
 	CameraBoom->bInheritRoll = false;
+	// The mesh is scaled per prop; the boom must not stretch with it.
 	CameraBoom->SetUsingAbsoluteScale(true);
 
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("Camera"));
@@ -120,9 +119,8 @@ void APossessablePawn::Configure(const FString& DisplayName, EHostType InHostTyp
 		Movement->MaxSpeed = 190.f;
 		Possessable->CameraDistance = 300.f;
 		break;
-	case EHostMobility::Static:
-	case EHostMobility::Hinge:
 	default:
+		// Static and hinge hosts shuffle at best. A vending machine does not sprint.
 		Movement->MaxSpeed = 45.f;
 		Possessable->CameraDistance = 280.f;
 		break;
@@ -157,7 +155,7 @@ void APossessablePawn::ApplyVisuals()
 	Detail->SetVisibility(bHasDetail);
 	if (bHasDetail)
 	{
-		// Detail is a child of a scaled mesh, so undo the parent scale first.
+		// The detail hangs off a scaled parent, so undo that scale.
 		const FVector ParentScale = Mesh->GetComponentScale();
 		Detail->SetWorldScale3D(ExtentToScale(VisualDetailExtent));
 		Detail->SetRelativeLocation(FVector(
@@ -175,10 +173,18 @@ void APossessablePawn::ApplyVisuals()
 		}
 	}
 
-	if (CameraBoom)
+	if (CameraBoom && Possessable)
 	{
-		CameraBoom->TargetArmLength = Possessable ? Possessable->CameraDistance : 350.f;
+		CameraBoom->TargetArmLength = Possessable->CameraDistance;
 		CameraBoom->SetWorldLocation(GetActorLocation() + FVector(0.f, 0.f, VisualExtent.Z + 40.f));
+	}
+}
+
+void APossessablePawn::OnRevealChanged(bool bRevealed)
+{
+	if (MeshMaterial)
+	{
+		MeshMaterial->SetVectorParameterValue(TEXT("Color"), bRevealed ? FLinearColor(1.f, 0.1f, 0.6f) : VisualColour);
 	}
 }
 
@@ -191,20 +197,16 @@ void APossessablePawn::DriveForward(float Value)
 	switch (Possessable->Mobility)
 	{
 	case EHostMobility::Wheeled:
-		// Wheeled hosts drive forwards along their own facing.
+		// Wheeled hosts drive along their own facing.
 		AddMovementInput(GetActorForwardVector(), Value);
 		break;
 	case EHostMobility::Static:
 	case EHostMobility::Hinge:
-		// Only a nudge: vending machines shuffle, they do not sprint.
 		AddMovementInput(GetActorForwardVector(), Value * 0.25f);
 		break;
 	default:
-	{
-		const FRotator Yaw(0.f, GetControlRotation().Yaw, 0.f);
-		AddMovementInput(FRotationMatrix(Yaw).GetUnitAxis(EAxis::X), Value);
+		AddMovementInput(FRotationMatrix(FRotator(0.f, GetControlRotation().Yaw, 0.f)).GetUnitAxis(EAxis::X), Value);
 		break;
-	}
 	}
 }
 
@@ -214,22 +216,20 @@ void APossessablePawn::DriveRight(float Value)
 	{
 		return;
 	}
+	const float DeltaSeconds = GetWorld() ? GetWorld()->GetDeltaSeconds() : 0.f;
 	switch (Possessable->Mobility)
 	{
 	case EHostMobility::Wheeled:
-		// Steering rather than strafing.
-		AddActorWorldRotation(FRotator(0.f, Value * 90.f * GetWorld()->GetDeltaSeconds(), 0.f));
+		// Steering, not strafing.
+		AddActorWorldRotation(FRotator(0.f, Value * 90.f * DeltaSeconds, 0.f));
 		break;
 	case EHostMobility::Static:
 	case EHostMobility::Hinge:
-		AddActorWorldRotation(FRotator(0.f, Value * 45.f * GetWorld()->GetDeltaSeconds(), 0.f));
+		AddActorWorldRotation(FRotator(0.f, Value * 45.f * DeltaSeconds, 0.f));
 		break;
 	default:
-	{
-		const FRotator Yaw(0.f, GetControlRotation().Yaw, 0.f);
-		AddMovementInput(FRotationMatrix(Yaw).GetUnitAxis(EAxis::Y), Value);
+		AddMovementInput(FRotationMatrix(FRotator(0.f, GetControlRotation().Yaw, 0.f)).GetUnitAxis(EAxis::Y), Value);
 		break;
-	}
 	}
 }
 
@@ -243,43 +243,26 @@ void APossessablePawn::ToggleHinge()
 	FParasiteAudio::Play(this, EParasiteSound::UIClick, GetActorLocation());
 }
 
-void APossessablePawn::SetRevealed(float Seconds)
-{
-	const UWorld* World = GetWorld();
-	RevealEndTime = (World ? World->GetTimeSeconds() : 0.f) + Seconds;
-}
-
 void APossessablePawn::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	const float Now = GetWorld() ? GetWorld()->GetTimeSeconds() : 0.f;
-
-	// Scan reveal tint.
-	const bool bShouldReveal = Now < RevealEndTime;
-	if (bShouldReveal != bRevealApplied && MeshMaterial)
-	{
-		bRevealApplied = bShouldReveal;
-		MeshMaterial->SetVectorParameterValue(TEXT("Color"), bShouldReveal ? FLinearColor(1.f, 0.1f, 0.6f) : VisualColour);
-	}
-
-	// Hinge props swing towards their target angle instead of driving.
 	if (Possessable && Possessable->Mobility == EHostMobility::Hinge)
 	{
+		// Doors swing towards their target angle rather than driving.
 		const float Target = bHingeOpen ? 1.f : 0.f;
 		if (!FMath::IsNearlyEqual(HingeAlpha, Target, 0.005f))
 		{
 			HingeAlpha = FMath::FInterpConstantTo(HingeAlpha, Target, DeltaSeconds, 2.5f);
-			FRotator Rot = GetActorRotation();
-			Rot.Yaw = HingeClosedYaw + HingeAlpha * 95.f;
-			SetActorRotation(Rot);
+			FRotator Rotation = GetActorRotation();
+			Rotation.Yaw = HingeClosedYaw + HingeAlpha * 95.f;
+			SetActorRotation(Rotation);
 		}
 	}
-	// Static hosts breathe a little so a possessed one is subtly readable.
 	else if (Possessable && Possessable->Mobility == EHostMobility::Static && Possessable->bPossessed)
 	{
+		// A possessed static host breathes, which is subtly readable up close.
 		WobbleTime += DeltaSeconds;
-		const float Wobble = FMath::Sin(WobbleTime * 6.f) * 1.5f;
-		SetActorRotation(FRotator(0.f, GetActorRotation().Yaw, Wobble));
+		SetActorRotation(FRotator(0.f, GetActorRotation().Yaw, FMath::Sin(WobbleTime * 6.f) * 1.5f));
 	}
 }

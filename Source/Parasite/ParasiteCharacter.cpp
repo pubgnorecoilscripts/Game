@@ -9,8 +9,8 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/PointLightComponent.h"
 #include "Materials/Material.h"
-#include "Engine/StaticMesh.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Engine/StaticMesh.h"
 #include "UObject/ConstructorHelpers.h"
 #include "Net/UnrealNetwork.h"
 
@@ -22,8 +22,8 @@ AParasiteCharacter::AParasiteCharacter()
 
 	GetCapsuleComponent()->InitCapsuleSize(28.f, 34.f);
 
-	// No skeletal assets in this project: the character mesh stays empty and the
-	// visual is built from engine basic shapes.
+	// The project ships no skeletal assets, so the character mesh stays empty and
+	// the parasite is built from engine basic shapes.
 	GetMesh()->SetVisibility(false);
 	GetMesh()->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 
@@ -76,6 +76,8 @@ AParasiteCharacter::AParasiteCharacter()
 	Possessable->Mobility = EHostMobility::Walk;
 	Possessable->HostDisplayName = TEXT("ENEMY");
 	Possessable->CameraDistance = 220.f;
+	// The simulation already owns a host for this body; the game mode links it.
+	Possessable->bManagedExternally = true;
 
 	bUseControllerRotationYaw = false;
 	UCharacterMovementComponent* Move = GetCharacterMovement();
@@ -92,14 +94,13 @@ AParasiteCharacter::AParasiteCharacter()
 void AParasiteCharacter::BeginPlay()
 {
 	Super::BeginPlay();
-
 	if (Body && Body->GetMaterial(0))
 	{
 		BodyMaterial = Body->CreateAndSetMaterialInstanceDynamic(0);
 	}
-	if (AParasitePlayerState* PS = GetParasitePlayerState())
+	if (const AParasitePlayerState* PS = GetPlayerState<AParasitePlayerState>())
 	{
-		ApplyTeamColour(PS->GetTeam());
+		ApplyTeamColour(PS->Team);
 	}
 }
 
@@ -115,17 +116,17 @@ void AParasiteCharacter::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
 
-	// Team colour can arrive after BeginPlay on clients.
-	if (BodyMaterial)
+	// The player state can arrive after BeginPlay on clients.
+	if (const AParasitePlayerState* PS = GetPlayerState<AParasitePlayerState>())
 	{
-		if (const AParasitePlayerState* PS = GetParasitePlayerState())
+		if (PS->Team != AppliedTeam)
 		{
-			ApplyTeamColour(PS->GetTeam());
+			ApplyTeamColour(PS->Team);
 		}
 	}
 
-	// Wet little footsteps, locally only, so the parasite is audible when close.
-	if (IsLocallyControlled() && !bDormant && GetVelocity().SizeSquared2D() > 100.f && !GetCharacterMovement()->IsFalling())
+	// Wet little footsteps, so a parasite close by is audible.
+	if (IsLocallyControlled() && !bDormant && !GetCharacterMovement()->IsFalling() && GetVelocity().SizeSquared2D() > 100.f)
 	{
 		StepSoundTimer -= DeltaSeconds;
 		if (StepSoundTimer <= 0.f)
@@ -158,6 +159,14 @@ void AParasiteCharacter::OnRep_Dormant()
 	}
 }
 
+void AParasiteCharacter::OnRevealChanged(bool bRevealed)
+{
+	if (Glow)
+	{
+		Glow->SetLightColor(bRevealed ? FLinearColor(1.f, 0.1f, 0.6f) : FLinearColor(0.4f, 1.f, 0.5f));
+	}
+}
+
 void AParasiteCharacter::SetDormant(bool bNewDormant, const FVector& WakeLocation)
 {
 	if (!HasAuthority())
@@ -169,7 +178,21 @@ void AParasiteCharacter::SetDormant(bool bNewDormant, const FVector& WakeLocatio
 		SetActorLocation(WakeLocation, false, nullptr, ETeleportType::TeleportPhysics);
 	}
 	bDormant = bNewDormant;
-	OnRep_Dormant();		// server side apply
+	OnRep_Dormant();		// apply on the server as well
+}
+
+void AParasiteCharacter::SetHijacked(bool bNewHijacked, float NewResistProgress)
+{
+	if (!HasAuthority())
+	{
+		return;
+	}
+	ResistProgress = NewResistProgress;
+	if (bHijacked != bNewHijacked)
+	{
+		bHijacked = bNewHijacked;
+		OnRep_Hijacked();
+	}
 }
 
 void AParasiteCharacter::ApplyHijackInput(float Forward, float Right, float YawDelta)
@@ -181,20 +204,9 @@ void AParasiteCharacter::ApplyHijackInput(float Forward, float Right, float YawD
 	AddActorWorldRotation(FRotator(0.f, YawDelta, 0.f));
 
 	const FRotator YawOnly(0.f, GetActorRotation().Yaw, 0.f);
-	const FVector Fwd = FRotationMatrix(YawOnly).GetUnitAxis(EAxis::X);
-	const FVector Side = FRotationMatrix(YawOnly).GetUnitAxis(EAxis::Y);
-	AddMovementInput(Fwd, FMath::Clamp(Forward, -1.f, 1.f));
-	AddMovementInput(Side, FMath::Clamp(Right, -1.f, 1.f));
-}
-
-bool AParasiteCharacter::AddResist(float Amount)
-{
-	if (!HasAuthority() || !bHijacked)
-	{
-		return false;
-	}
-	ResistProgress = FMath::Clamp(ResistProgress + Amount, 0.f, 1.f);
-	return ResistProgress >= 1.f;
+	const FRotationMatrix Rotation(YawOnly);
+	AddMovementInput(Rotation.GetUnitAxis(EAxis::X), FMath::Clamp(Forward, -1.f, 1.f));
+	AddMovementInput(Rotation.GetUnitAxis(EAxis::Y), FMath::Clamp(Right, -1.f, 1.f));
 }
 
 void AParasiteCharacter::SetSprinting(bool bSprint)
@@ -205,13 +217,9 @@ void AParasiteCharacter::SetSprinting(bool bSprint)
 	}
 }
 
-AParasitePlayerState* AParasiteCharacter::GetParasitePlayerState() const
-{
-	return GetPlayerState<AParasitePlayerState>();
-}
-
 void AParasiteCharacter::ApplyTeamColour(EParasiteTeam Team)
 {
+	AppliedTeam = Team;
 	if (!BodyMaterial)
 	{
 		return;

@@ -3,13 +3,12 @@
 #include "ParasitePlayerState.h"
 #include "ParasiteGameState.h"
 #include "ParasiteCharacter.h"
-#include "PossessableComponent.h"
 #include "ParasiteAudio.h"
+#include "Core/ParasiteRules.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "GameFramework/PlayerInput.h"
-#include "Kismet/GameplayStatics.h"
 
 namespace
 {
@@ -33,10 +32,7 @@ namespace
 		Btn_SensUp,
 		Btn_SensDown,
 		Btn_Rematch,
-		Btn_Resume,
-		Btn_Upgrade1,
-		Btn_Upgrade2,
-		Btn_Upgrade3
+		Btn_Resume
 	};
 
 	FString FormatTime(float Seconds)
@@ -58,29 +54,37 @@ void AParasiteHUD::BeginPlay()
 	{
 		HUDFont = GEngine->GetMediumFont();
 	}
-	// The front end owns the mouse until the player picks something.
-	if (AParasitePlayerController* PC = GetOwningController())
-	{
-		PC->bMenuOpen = true;
-		PC->bShowMouseCursor = true;
-		PC->SetInputMode(FInputModeGameAndUI());
-	}
 }
 
-AParasitePlayerController* AParasiteHUD::GetOwningController() const
+AParasitePlayerController* AParasiteHUD::GetOwningParasiteController() const
 {
 	return Cast<AParasitePlayerController>(GetOwningPlayerController());
 }
 
 AParasitePlayerState* AParasiteHUD::GetOwningState() const
 {
-	const AParasitePlayerController* PC = GetOwningController();
+	const AParasitePlayerController* PC = GetOwningParasiteController();
 	return PC ? PC->GetPlayerState<AParasitePlayerState>() : nullptr;
 }
 
 AParasiteGameState* AParasiteHUD::GetParasiteGameState() const
 {
 	return GetWorld() ? GetWorld()->GetGameState<AParasiteGameState>() : nullptr;
+}
+
+bool AParasiteHUD::IsMenuActive() const
+{
+	if (bMainMenuOpen)
+	{
+		return true;
+	}
+	const AParasitePlayerController* PC = GetOwningParasiteController();
+	if (PC && PC->bMenuOpen)
+	{
+		return true;
+	}
+	const AParasiteGameState* GS = GetParasiteGameState();
+	return GS && GS->Phase == EMatchPhase::PostMatch;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,7 +94,6 @@ AParasiteGameState* AParasiteHUD::GetParasiteGameState() const
 void AParasiteHUD::DrawPanel(float X, float Y, float Width, float Height, const FLinearColor& Colour)
 {
 	DrawRect(Colour, X, Y, Width, Height);
-	// Thin sci-fi edge.
 	DrawRect(FLinearColor(0.3f, 0.9f, 0.9f, 0.35f), X, Y, Width, 2.f);
 	DrawRect(FLinearColor(0.3f, 0.9f, 0.9f, 0.15f), X, Y + Height - 2.f, Width, 2.f);
 }
@@ -101,14 +104,21 @@ void AParasiteHUD::DrawLabel(const FString& Text, float X, float Y, const FLinea
 	{
 		return;
 	}
+	UFont* Font = HUDFont ? HUDFont.Get() : (GEngine ? GEngine->GetMediumFont() : nullptr);
 	float DrawX = X;
-	if (bCentre)
+	if (bCentre && Font)
 	{
 		float TextWidth = 0.f, TextHeight = 0.f;
-		Canvas->TextSize(HUDFont ? HUDFont : GEngine->GetMediumFont(), Text, TextWidth, TextHeight, Scale, Scale);
+		Canvas->TextSize(Font, Text, TextWidth, TextHeight, Scale, Scale);
 		DrawX = X - TextWidth * 0.5f;
 	}
-	DrawText(Text, Colour, DrawX, Y, HUDFont, Scale, false);
+	DrawText(Text, Colour, DrawX, Y, Font, Scale, false);
+}
+
+void AParasiteHUD::DrawBar(float X, float Y, float Width, float Height, float Fraction, const FLinearColor& Colour)
+{
+	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.6f), X, Y, Width, Height);
+	DrawRect(Colour, X + 2.f, Y + 2.f, FMath::Clamp(Fraction, 0.f, 1.f) * (Width - 4.f), Height - 4.f);
 }
 
 void AParasiteHUD::AddButton(const FString& Label, float X, float Y, float Width, float Height, int32 Id)
@@ -120,11 +130,10 @@ void AParasiteHUD::AddButton(const FString& Label, float X, float Y, float Width
 	Button.Id = Id;
 	Buttons.Add(Button);
 
-	// Hover highlight.
-	float MouseX = 0.f, MouseY = 0.f;
 	bool bHover = false;
-	if (AParasitePlayerController* PC = GetOwningController())
+	if (AParasitePlayerController* PC = GetOwningParasiteController())
 	{
+		float MouseX = 0.f, MouseY = 0.f;
 		if (PC->GetMousePosition(MouseX, MouseY))
 		{
 			bHover = MouseX >= X && MouseX <= X + Width && MouseY >= Y && MouseY <= Y + Height;
@@ -132,12 +141,6 @@ void AParasiteHUD::AddButton(const FString& Label, float X, float Y, float Width
 	}
 	DrawPanel(X, Y, Width, Height, bHover ? FLinearColor(0.1f, 0.35f, 0.35f, 0.9f) : ColPanel);
 	DrawLabel(Label, X + Width * 0.5f, Y + Height * 0.5f - 10.f, bHover ? ColAccent : ColText, 1.2f, true);
-}
-
-void AParasiteHUD::DrawBar(float X, float Y, float Width, float Height, float Fraction, const FLinearColor& Colour)
-{
-	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.6f), X, Y, Width, Height);
-	DrawRect(Colour, X + 2.f, Y + 2.f, FMath::Clamp(Fraction, 0.f, 1.f) * (Width - 4.f), Height - 4.f);
 }
 
 // ---------------------------------------------------------------------------
@@ -155,9 +158,8 @@ void AParasiteHUD::DrawHUD()
 	ViewX = Canvas->ClipX;
 	ViewY = Canvas->ClipY;
 
-	// One place decides whether the mouse is free: front end, pause menu or the
-	// end-of-match screen.
-	if (AParasitePlayerController* PC = GetOwningController())
+	// One place owns the cursor: the front end, the pause menu, or the end screen.
+	if (AParasitePlayerController* PC = GetOwningParasiteController())
 	{
 		const bool bWantsCursor = IsMenuActive();
 		if (PC->bShowMouseCursor != bWantsCursor)
@@ -190,7 +192,7 @@ void AParasiteHUD::DrawHUD()
 	DrawMatchBar();
 	DrawPlayerBar();
 	DrawMarkers();
-	DrawMessages();
+	DrawMessage();
 	DrawCrosshair();
 
 	const AParasiteGameState* GS = GetParasiteGameState();
@@ -202,18 +204,18 @@ void AParasiteHUD::DrawHUD()
 	{
 		DrawScoreboard();
 	}
-	if (AParasitePlayerController* PC = GetOwningController())
+	if (const AParasitePlayerController* PC = GetOwningParasiteController())
 	{
 		if (PC->bMenuOpen)
 		{
-			// In-match pause menu.
-			const float PanelW = 340.f;
-			const float PanelX = ViewX * 0.5f - PanelW * 0.5f;
-			DrawPanel(PanelX - 20.f, ViewY * 0.32f - 30.f, PanelW + 40.f, 260.f, FLinearColor(0.02f, 0.05f, 0.07f, 0.9f));
-			DrawLabel(TEXT("PARASITE"), ViewX * 0.5f, ViewY * 0.32f - 20.f, ColAccent, 1.6f, true);
-			AddButton(TEXT("RESUME"), PanelX, ViewY * 0.32f + 30.f, PanelW, 46.f, Btn_Resume);
-			AddButton(TEXT("SETTINGS"), PanelX, ViewY * 0.32f + 86.f, PanelW, 46.f, Btn_Settings);
-			AddButton(TEXT("QUIT"), PanelX, ViewY * 0.32f + 142.f, PanelW, 46.f, Btn_Quit);
+			if (bSettingsOpen)
+			{
+				DrawSettings();
+			}
+			else
+			{
+				DrawPauseMenu();
+			}
 		}
 	}
 }
@@ -229,7 +231,6 @@ void AParasiteHUD::DrawMatchBar()
 	const float BarX = ViewX * 0.5f - BarW * 0.5f;
 	DrawPanel(BarX, 12.f, BarW, 62.f, ColPanel);
 
-	// Team A attacks nest B, so "TEAM A INFECTION" is progress made by team A.
 	const float InfectA = GS->GetInfectionByTeam(EParasiteTeam::TeamA);
 	const float InfectB = GS->GetInfectionByTeam(EParasiteTeam::TeamB);
 
@@ -253,59 +254,50 @@ void AParasiteHUD::DrawMatchBar()
 void AParasiteHUD::DrawPlayerBar()
 {
 	const AParasitePlayerState* PS = GetOwningState();
-	const AParasitePlayerController* PC = GetOwningController();
-	if (!PS || !PC || !GetWorld())
+	const AParasitePlayerController* PC = GetOwningParasiteController();
+	if (!PS || !PC)
 	{
 		return;
 	}
-	const float Now = GetWorld()->GetTimeSeconds();
+	const Parasite::FRules Rules;		// display only; the server owns the real ones
 	const float PanelH = 118.f;
 	const float PanelY = ViewY - PanelH - 16.f;
 	DrawPanel(20.f, PanelY, 460.f, PanelH, ColPanel);
 
-	// Team + DNA.
-	const bool bTeamA = PS->GetTeam() == EParasiteTeam::TeamA;
-	DrawLabel(bTeamA ? TEXT("TEAM A") : (PS->GetTeam() == EParasiteTeam::TeamB ? TEXT("TEAM B") : TEXT("NO TEAM")),
+	const bool bTeamA = PS->Team == EParasiteTeam::TeamA;
+	DrawLabel(bTeamA ? TEXT("TEAM A") : (PS->Team == EParasiteTeam::TeamB ? TEXT("TEAM B") : TEXT("NO TEAM")),
 		36.f, PanelY + 10.f, bTeamA ? ColTeamA : ColTeamB, 1.2f);
 	DrawLabel(FString::Printf(TEXT("DNA %d"), PS->DNA), 160.f, PanelY + 10.f, ColAccent, 1.2f);
 
-	// Cooldowns.
-	const float PossessLeft = FMath::Max(0.f, PS->PossessAvailableTime - Now);
-	const float ScanLeft = FMath::Max(0.f, PS->ScanAvailableTime - Now);
-	DrawLabel(TEXT("POSSESS [E]"), 36.f, PanelY + 40.f, PossessLeft > 0.f ? ColDim : ColText);
-	DrawBar(180.f, PanelY + 42.f, 120.f, 10.f, PossessLeft > 0.f ? 1.f - PossessLeft / ParasiteRules::PossessCooldown : 1.f,
-		PossessLeft > 0.f ? ColDim : ColAccent);
+	const bool bPossessReady = PS->PossessCooldownRemaining <= 0.f;
+	DrawLabel(TEXT("POSSESS [E]"), 36.f, PanelY + 40.f, bPossessReady ? ColText : ColDim);
+	DrawBar(180.f, PanelY + 42.f, 120.f, 10.f,
+		bPossessReady ? 1.f : 1.f - PS->PossessCooldownRemaining / Rules.PossessCooldown,
+		bPossessReady ? ColAccent : ColDim);
 
-	DrawLabel(TEXT("SCAN [F]"), 36.f, PanelY + 62.f, ScanLeft > 0.f ? ColDim : ColText);
-	DrawBar(180.f, PanelY + 64.f, 120.f, 10.f, ScanLeft > 0.f ? 1.f - ScanLeft / ParasiteRules::ScanCooldown : 1.f,
-		ScanLeft > 0.f ? ColDim : ColAccent);
+	const bool bScanReady = PS->ScanCooldownRemaining <= 0.f;
+	DrawLabel(TEXT("SCAN [F]"), 36.f, PanelY + 62.f, bScanReady ? ColText : ColDim);
+	DrawBar(180.f, PanelY + 64.f, 120.f, 10.f,
+		bScanReady ? 1.f : 1.f - PS->ScanCooldownRemaining / Rules.ScanCooldown,
+		bScanReady ? ColAccent : ColDim);
 
-	// Host readout.
-	FString HostLine = TEXT("HOST: NONE (PARASITE)");
-	float HostFraction = 0.f;
-	if (const AActor* Host = PS->CurrentHost.Get())
-	{
-		if (const UPossessableComponent* Comp = Host->FindComponentByClass<UPossessableComponent>())
-		{
-			const float Remaining = FMath::Max(0.f, Comp->PossessionEndTime - Now);
-			const float MaxDuration = FMath::Max(1.f, Comp->GetMaxDuration(PS));
-			HostFraction = Remaining / MaxDuration;
-			HostLine = FString::Printf(TEXT("POSSESSED: %s  %.1fs"), *Comp->HostDisplayName, Remaining);
-		}
-	}
-	DrawLabel(HostLine, 36.f, PanelY + 86.f, PS->CurrentHost ? ColWarn : ColDim, 1.1f);
 	if (PS->CurrentHost)
 	{
-		DrawBar(320.f, PanelY + 88.f, 120.f, 10.f, HostFraction, ColWarn);
+		DrawLabel(FString::Printf(TEXT("POSSESSED: %s  %.1fs"), *PS->CurrentHostName, PS->HostTimeRemaining),
+			36.f, PanelY + 86.f, ColWarn, 1.1f);
+		// The bar is scaled against the longest possible stay for this host type.
+		const float MaxDuration = (PS->CurrentHostName == TEXT("ENEMY")) ? Rules.PlayerDuration + Rules.MimicDurationBonus
+			: (PS->CurrentHostName == TEXT("NPC")) ? Rules.NPCDuration : Rules.PropDuration;
+		DrawBar(320.f, PanelY + 88.f, 120.f, 10.f, PS->HostTimeRemaining / MaxDuration, ColWarn);
+	}
+	else
+	{
+		DrawLabel(TEXT("HOST: NONE (PARASITE)"), 36.f, PanelY + 86.f, ColDim, 1.1f);
 	}
 
-	// Upgrades.
-	const float UpgradeY = PanelY - 30.f;
-	FString UpgradeLine = FString::Printf(TEXT("[1] JUMPER  [2] MIMIC  [3] INFILTRATOR   (%d DNA each, %d/%d used)"),
-		ParasiteRules::UpgradeCost, PS->Upgrades.Num(), ParasiteRules::MaxUpgrades);
-	DrawLabel(UpgradeLine, 24.f, UpgradeY, ColDim);
+	DrawLabel(FString::Printf(TEXT("[1] JUMPER  [2] MIMIC  [3] INFILTRATOR   (%d DNA each, %d/%d used)"),
+		Rules.UpgradeCost, PS->NumUpgrades, Rules.MaxUpgrades), 24.f, PanelY - 30.f, ColDim);
 
-	// Being ridden warning.
 	if (const AParasiteCharacter* Body = PC->ParasiteBody.Get())
 	{
 		if (Body->bHijacked)
@@ -318,7 +310,7 @@ void AParasiteHUD::DrawPlayerBar()
 
 void AParasiteHUD::DrawMarkers()
 {
-	if (!Canvas || !GetWorld())
+	if (!GetWorld())
 	{
 		return;
 	}
@@ -341,7 +333,7 @@ void AParasiteHUD::DrawMarkers()
 	}
 }
 
-void AParasiteHUD::DrawMessages()
+void AParasiteHUD::DrawMessage()
 {
 	if (!GetWorld() || CurrentMessage.IsEmpty() || GetWorld()->GetTimeSeconds() > MessageExpiry)
 	{
@@ -377,11 +369,11 @@ void AParasiteHUD::DrawScoreboard()
 		{
 			continue;
 		}
-		const FLinearColor Colour = (PS->GetTeam() == EParasiteTeam::TeamA) ? ColTeamA : ColTeamB;
 		DrawLabel(FString::Printf(TEXT("%-24s   %s    %4d    %4d"),
 			*PS->GetPlayerName().Left(24),
-			PS->GetTeam() == EParasiteTeam::TeamA ? TEXT("A") : TEXT("B"),
-			PS->LifetimeDNA, PS->InfectionTicks), PanelX + 20.f, Row, Colour);
+			PS->Team == EParasiteTeam::TeamA ? TEXT("A") : TEXT("B"),
+			PS->LifetimeDNA, PS->InfectionTicks),
+			PanelX + 20.f, Row, PS->Team == EParasiteTeam::TeamA ? ColTeamA : ColTeamB);
 		Row += 24.f;
 	}
 }
@@ -395,16 +387,12 @@ void AParasiteHUD::DrawEndScreen()
 	}
 	DrawRect(FLinearColor(0.f, 0.f, 0.f, 0.55f), 0.f, 0.f, ViewX, ViewY);
 
-	FString Title;
+	FString Title = TEXT("DRAW");
 	FLinearColor Colour = ColText;
-	if (GS->WinningTeam == EParasiteTeam::None)
-	{
-		Title = TEXT("DRAW");
-	}
-	else
+	if (GS->WinningTeam != EParasiteTeam::None)
 	{
 		const AParasitePlayerState* PS = GetOwningState();
-		const bool bWon = PS && PS->GetTeam() == GS->WinningTeam;
+		const bool bWon = PS && PS->Team == GS->WinningTeam;
 		Title = bWon ? TEXT("YOUR HIVE WINS") : TEXT("YOUR HIVE LOSES");
 		Colour = bWon ? ColAccent : ColWarn;
 	}
@@ -426,16 +414,16 @@ void AParasiteHUD::DrawMainMenu()
 	const float ButtonX = ViewX * 0.5f - ButtonW * 0.5f;
 	float Y = ViewY * 0.34f;
 
-	AddButton(TEXT("PLAY"), ButtonX, Y, ButtonW, 48.f, Btn_Play);					Y += 58.f;
-	AddButton(TEXT("HOST"), ButtonX, Y, ButtonW, 48.f, Btn_Host);					Y += 58.f;
-	AddButton(TEXT("JOIN"), ButtonX, Y, ButtonW, 48.f, Btn_Join);					Y += 58.f;
-	AddButton(TEXT("SETTINGS"), ButtonX, Y, ButtonW, 48.f, Btn_Settings);			Y += 58.f;
-	AddButton(TEXT("QUIT"), ButtonX, Y, ButtonW, 48.f, Btn_Quit);					Y += 66.f;
+	AddButton(TEXT("PLAY"), ButtonX, Y, ButtonW, 48.f, Btn_Play);			Y += 58.f;
+	AddButton(TEXT("HOST"), ButtonX, Y, ButtonW, 48.f, Btn_Host);			Y += 58.f;
+	AddButton(TEXT("JOIN"), ButtonX, Y, ButtonW, 48.f, Btn_Join);			Y += 58.f;
+	AddButton(TEXT("SETTINGS"), ButtonX, Y, ButtonW, 48.f, Btn_Settings);	Y += 58.f;
+	AddButton(TEXT("QUIT"), ButtonX, Y, ButtonW, 48.f, Btn_Quit);			Y += 66.f;
 
 	if (bJoinEditing)
 	{
 		DrawLabel(FString::Printf(TEXT("SERVER: %s_"), *JoinAddress), ViewX * 0.5f, Y, ColText, 1.4f, true);
-		DrawLabel(TEXT("type an address, ENTER or CONNECT to join"), ViewX * 0.5f, Y + 26.f, ColDim, 1.f, true);
+		DrawLabel(TEXT("type an address, then ENTER or CONNECT"), ViewX * 0.5f, Y + 26.f, ColDim, 1.f, true);
 		AddButton(TEXT("CONNECT"), ButtonX, Y + 52.f, ButtonW, 44.f, Btn_JoinConfirm);
 	}
 	else
@@ -449,17 +437,15 @@ void AParasiteHUD::DrawSettings()
 {
 	DrawRect(FLinearColor(0.01f, 0.03f, 0.04f, 0.94f), 0.f, 0.f, ViewX, ViewY);
 	DrawLabel(TEXT("SETTINGS"), ViewX * 0.5f, ViewY * 0.2f, ColAccent, 2.6f, true);
-
 	DrawLabel(FString::Printf(TEXT("MOUSE SENSITIVITY: %.2f"), MouseSensitivity), ViewX * 0.5f, ViewY * 0.34f, ColText, 1.4f, true);
 
-	const float ButtonW = 150.f;
-	AddButton(TEXT("-"), ViewX * 0.5f - ButtonW - 10.f, ViewY * 0.4f, ButtonW, 44.f, Btn_SensDown);
-	AddButton(TEXT("+"), ViewX * 0.5f + 10.f, ViewY * 0.4f, ButtonW, 44.f, Btn_SensUp);
+	AddButton(TEXT("-"), ViewX * 0.5f - 160.f, ViewY * 0.4f, 150.f, 44.f, Btn_SensDown);
+	AddButton(TEXT("+"), ViewX * 0.5f + 10.f, ViewY * 0.4f, 150.f, 44.f, Btn_SensUp);
 
 	DrawLabel(TEXT("CONTROLS"), ViewX * 0.5f, ViewY * 0.52f, ColAccent, 1.4f, true);
 	const TCHAR* Lines[] = {
-		TEXT("WASD move   SHIFT sprint   CTRL crouch   SPACE jump / open door"),
-		TEXT("E possess   Q exit host   LMB parasite leap   F scan   MMB ping"),
+		TEXT("WASD move   SHIFT sprint   CTRL crouch   SPACE jump / swing a door"),
+		TEXT("E possess or interact   Q leave host   LMB leap   F scan   MMB ping"),
 		TEXT("R resist a hijack   TAB scoreboard   1/2/3 evolve   ESC menu")
 	};
 	for (int32 Index = 0; Index < UE_ARRAY_COUNT(Lines); ++Index)
@@ -470,28 +456,35 @@ void AParasiteHUD::DrawSettings()
 	AddButton(TEXT("BACK"), ViewX * 0.5f - 160.f, ViewY * 0.74f, 320.f, 46.f, Btn_Back);
 }
 
+void AParasiteHUD::DrawPauseMenu()
+{
+	const float PanelW = 340.f;
+	const float PanelX = ViewX * 0.5f - PanelW * 0.5f;
+	DrawPanel(PanelX - 20.f, ViewY * 0.32f - 30.f, PanelW + 40.f, 260.f, FLinearColor(0.02f, 0.05f, 0.07f, 0.9f));
+	DrawLabel(TEXT("PARASITE"), ViewX * 0.5f, ViewY * 0.32f - 20.f, ColAccent, 1.6f, true);
+	AddButton(TEXT("RESUME"), PanelX, ViewY * 0.32f + 30.f, PanelW, 46.f, Btn_Resume);
+	AddButton(TEXT("SETTINGS"), PanelX, ViewY * 0.32f + 86.f, PanelW, 46.f, Btn_Settings);
+	AddButton(TEXT("QUIT"), PanelX, ViewY * 0.32f + 142.f, PanelW, 46.f, Btn_Quit);
+}
+
 // ---------------------------------------------------------------------------
 // Interaction
 // ---------------------------------------------------------------------------
 
-bool AParasiteHUD::IsMenuActive() const
+void AParasiteHUD::LeaveMenus()
 {
-	if (bMainMenuOpen)
+	bMainMenuOpen = false;
+	bJoinEditing = false;
+	bSettingsOpen = false;
+	if (AParasitePlayerController* PC = GetOwningParasiteController())
 	{
-		return true;
+		PC->bMenuOpen = false;
 	}
-	const AParasitePlayerController* PC = GetOwningController();
-	if (PC && PC->bMenuOpen)
-	{
-		return true;
-	}
-	const AParasiteGameState* GS = GetParasiteGameState();
-	return GS && GS->Phase == EMatchPhase::PostMatch;
 }
 
 void AParasiteHUD::HandleMenuClick()
 {
-	AParasitePlayerController* PC = GetOwningController();
+	AParasitePlayerController* PC = GetOwningParasiteController();
 	if (!PC)
 	{
 		return;
@@ -517,20 +510,13 @@ void AParasiteHUD::HandleMenuClick()
 		{
 		case Btn_Play:
 		case Btn_Resume:
-			bMainMenuOpen = false;
-			bJoinEditing = false;
-			PC->bMenuOpen = false;
-			PC->bShowMouseCursor = false;
-			PC->SetInputMode(FInputModeGameOnly());
+			LeaveMenus();
 			break;
 
 		case Btn_Host:
-			// Listen server on the current map: everyone else uses JOIN.
+			// A listen server on the current map; everybody else uses JOIN.
 			PC->ConsoleCommand(TEXT("open /Engine/Maps/Entry?listen"), true);
-			bMainMenuOpen = false;
-			PC->bMenuOpen = false;
-			PC->bShowMouseCursor = false;
-			PC->SetInputMode(FInputModeGameOnly());
+			LeaveMenus();
 			break;
 
 		case Btn_Join:
@@ -539,16 +525,11 @@ void AParasiteHUD::HandleMenuClick()
 
 		case Btn_JoinConfirm:
 			PC->ClientTravel(JoinAddress, ETravelType::TRAVEL_Absolute);
-			bMainMenuOpen = false;
-			bJoinEditing = false;
-			PC->bMenuOpen = false;
-			PC->bShowMouseCursor = false;
-			PC->SetInputMode(FInputModeGameOnly());
+			LeaveMenus();
 			break;
 
 		case Btn_Settings:
 			bSettingsOpen = true;
-			bMainMenuOpen = true;
 			break;
 
 		case Btn_Back:
@@ -592,32 +573,23 @@ bool AParasiteHUD::HandleTextInput(const FKey& Key)
 	}
 	if (Key == EKeys::Enter)
 	{
-		if (AParasitePlayerController* PC = GetOwningController())
+		if (AParasitePlayerController* PC = GetOwningParasiteController())
 		{
 			PC->ClientTravel(JoinAddress, ETravelType::TRAVEL_Absolute);
-			bMainMenuOpen = false;
-			bJoinEditing = false;
-			PC->bMenuOpen = false;
-			PC->bShowMouseCursor = false;
-			PC->SetInputMode(FInputModeGameOnly());
+			LeaveMenus();
 		}
 		return true;
 	}
 
+	// Digits report as "One", "Two", ... and the separators by name.
 	const FString Name = Key.GetFName().ToString();
-	if (Name.Len() == 1 && (FChar::IsDigit(Name[0]) || Name[0] == TEXT('.')))
-	{
-		JoinAddress.AppendChar(Name[0]);
-		return true;
-	}
-	// Number keys report as "One", "Two", ... and the period as "Period"/"Decimal".
 	static const TCHAR* Words[] = { TEXT("Zero"), TEXT("One"), TEXT("Two"), TEXT("Three"), TEXT("Four"),
 		TEXT("Five"), TEXT("Six"), TEXT("Seven"), TEXT("Eight"), TEXT("Nine") };
 	for (int32 Digit = 0; Digit < UE_ARRAY_COUNT(Words); ++Digit)
 	{
 		if (Name == Words[Digit] || Name == FString::Printf(TEXT("NumPad%s"), Words[Digit]))
 		{
-			JoinAddress.AppendChar(TEXT('0') + Digit);
+			JoinAddress.AppendChar(static_cast<TCHAR>(TEXT('0') + Digit));
 			return true;
 		}
 	}

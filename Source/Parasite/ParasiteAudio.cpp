@@ -1,7 +1,7 @@
 #include "ParasiteAudio.h"
 #include "Sound/SoundWaveProcedural.h"
-#include "Kismet/GameplayStatics.h"
 #include "Components/AudioComponent.h"
+#include "Kismet/GameplayStatics.h"
 #include "Engine/World.h"
 #include "Engine/Engine.h"
 #include "TimerManager.h"
@@ -13,7 +13,7 @@ namespace
 		float StartHz;
 		float EndHz;
 		float Duration;
-		float Noise;		// 0..1 blend of white noise
+		float Noise;		// 0..1 blend towards white noise
 		float Volume;
 	};
 
@@ -36,7 +36,7 @@ namespace
 		}
 	}
 
-	/** Builds a one-shot mono procedural wave from a tone spec. */
+	/** Builds a one shot mono wave from a tone spec. */
 	USoundWaveProcedural* BuildWave(EParasiteSound Sound)
 	{
 		const FToneSpec Spec = GetSpec(Sound);
@@ -66,12 +66,9 @@ namespace
 			const float Hz = FMath::Lerp(Spec.StartHz, Spec.EndHz, Alpha);
 			Phase += 2.f * PI * Hz / static_cast<float>(SampleRate);
 
-			// Short attack, long decay: keeps clicks out of the buffer.
+			// Fast attack, long decay: keeps clicks out of the buffer.
 			const float Envelope = FMath::Min(1.f, Alpha * 25.f) * FMath::Pow(1.f - Alpha, 1.5f);
-			const float Tone = FMath::Sin(Phase);
-			const float Noise = Random.FRandRange(-1.f, 1.f);
-			const float Value = FMath::Lerp(Tone, Noise, Spec.Noise) * Envelope * Spec.Volume;
-
+			const float Value = FMath::Lerp(FMath::Sin(Phase), Random.FRandRange(-1.f, 1.f), Spec.Noise) * Envelope * Spec.Volume;
 			Samples[Index] = static_cast<int16>(FMath::Clamp(Value, -1.f, 1.f) * 32767.f);
 		}
 
@@ -79,7 +76,7 @@ namespace
 		return Wave;
 	}
 
-	void StopLater(const UObject* WorldContext, UAudioComponent* Component, float Delay)
+	void StopAfter(const UObject* WorldContext, UAudioComponent* Component, float Delay)
 	{
 		UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContext, EGetWorldErrorMode::ReturnNull) : nullptr;
 		if (!World || !Component)
@@ -104,13 +101,10 @@ void FParasiteAudio::Play(const UObject* WorldContext, EParasiteSound Sound, con
 	{
 		return;
 	}
-	USoundWaveProcedural* Wave = BuildWave(Sound);
-	if (!Wave)
+	if (USoundWaveProcedural* Wave = BuildWave(Sound))
 	{
-		return;
+		StopAfter(WorldContext, UGameplayStatics::SpawnSoundAtLocation(WorldContext, Wave, Location), GetSpec(Sound).Duration);
 	}
-	UAudioComponent* Component = UGameplayStatics::SpawnSoundAtLocation(WorldContext, Wave, Location);
-	StopLater(WorldContext, Component, GetSpec(Sound).Duration);
 }
 
 void FParasiteAudio::Play2D(const UObject* WorldContext, EParasiteSound Sound)
@@ -119,11 +113,8 @@ void FParasiteAudio::Play2D(const UObject* WorldContext, EParasiteSound Sound)
 	{
 		return;
 	}
-	USoundWaveProcedural* Wave = BuildWave(Sound);
-	if (!Wave)
+	if (USoundWaveProcedural* Wave = BuildWave(Sound))
 	{
-		return;
+		StopAfter(WorldContext, UGameplayStatics::SpawnSound2D(WorldContext, Wave), GetSpec(Sound).Duration);
 	}
-	UAudioComponent* Component = UGameplayStatics::SpawnSound2D(WorldContext, Wave);
-	StopLater(WorldContext, Component, GetSpec(Sound).Duration);
 }
