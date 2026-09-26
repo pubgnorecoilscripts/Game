@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
+#include "Engine/NetSerialization.h"
 #include "ParasiteTypes.h"
 #include "ParasitePlayerController.generated.h"
 

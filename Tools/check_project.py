@@ -97,7 +97,31 @@ for ue_enum, core_enum in (('EHostMobility', 'EHostMobility'), ('EMatchPhase', '
     check(ue_values[:len(core_values)] == core_values,
           f'{ue_enum}: Unreal mirror does not match the core enum order ({ue_values} vs {core_values})')
 
-# 8. The target engine version is stated consistently everywhere.
+# 8. Reflected object pointers name a type the header actually declares.
+#    A missing forward declaration is a compile error UHT will not warn about.
+BASE_DECLARED = {
+    # Provided by the engine headers these classes already inherit from.
+    'AActor', 'APawn', 'ACharacter', 'AController', 'APlayerController',
+    'UObject', 'USceneComponent', 'UWorld', 'APlayerState',
+}
+for header in unreal_headers():
+    body = open(header).read()
+    declared = set(re.findall(r'^class\s+(\w+)\s*;', body, re.M))
+    declared |= set(re.findall(r'class\s+PARASITE_API\s+(\w+)', body))
+    for pointee in set(re.findall(r'TObjectPtr<\s*(\w+)\s*>', body)):
+        check(pointee in declared or pointee in BASE_DECLARED,
+              f'{os.path.basename(header)}: TObjectPtr<{pointee}> but "{pointee}" is never declared here')
+
+# 9. The generated header has to be the last include in a reflected header.
+for header in unreal_headers():
+    body = open(header).read()
+    includes = re.findall(r'^#include\s+(".+?")', body, re.M)
+    if not any('generated.h' in inc for inc in includes):
+        continue
+    check('generated.h' in includes[-1],
+          f'{os.path.basename(header)}: generated header is not the last include ({includes[-1]} follows it)')
+
+# 10. The target engine version is stated consistently everywhere.
 TARGET_ENGINE = '5.4'
 uproject = open(os.path.join(ROOT, 'Parasite.uproject')).read()
 check(f'"EngineAssociation": "{TARGET_ENGINE}"' in uproject,

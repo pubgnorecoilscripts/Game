@@ -8,6 +8,7 @@
 class AParasitePlayerController;
 class AParasitePlayerState;
 class AParasiteGameState;
+class UFont;
 
 /** One clickable rectangle, rebuilt every frame. */
 struct FParasiteButton

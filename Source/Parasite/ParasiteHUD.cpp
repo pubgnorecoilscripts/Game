@@ -5,6 +5,7 @@
 #include "ParasiteCharacter.h"
 #include "ParasiteAudio.h"
 #include "Core/ParasiteRules.h"
+#include "Engine/World.h"
 #include "Engine/Canvas.h"
 #include "Engine/Engine.h"
 #include "Engine/Font.h"

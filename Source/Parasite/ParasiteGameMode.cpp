@@ -12,6 +12,7 @@
 #include "GameFramework/PlayerStart.h"
 #include "GameFramework/GameSession.h"
 #include "Engine/World.h"
+#include "Engine/Engine.h"
 #include "EngineUtils.h"
 #include "Containers/StringConv.h"
 

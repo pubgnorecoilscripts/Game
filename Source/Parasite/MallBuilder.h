@@ -5,6 +5,7 @@
 #include "ParasiteTypes.h"
 #include "MallBuilder.generated.h"
 
+class UStaticMesh;
 class UStaticMeshComponent;
 class UDirectionalLightComponent;
 class USkyLightComponent;
