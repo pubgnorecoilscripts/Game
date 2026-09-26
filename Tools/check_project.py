@@ -97,6 +97,25 @@ for ue_enum, core_enum in (('EHostMobility', 'EHostMobility'), ('EMatchPhase', '
     check(ue_values[:len(core_values)] == core_values,
           f'{ue_enum}: Unreal mirror does not match the core enum order ({ue_values} vs {core_values})')
 
+# 8. The target engine version is stated consistently everywhere.
+TARGET_ENGINE = '5.4'
+uproject = open(os.path.join(ROOT, 'Parasite.uproject')).read()
+check(f'"EngineAssociation": "{TARGET_ENGINE}"' in uproject,
+      f'Parasite.uproject: EngineAssociation is not "{TARGET_ENGINE}"')
+for target in glob.glob(os.path.join(ROOT, 'Source', '*.Target.cs')):
+    body = open(target).read()
+    expected = 'EngineIncludeOrderVersion.Unreal' + TARGET_ENGINE.replace('.', '_')
+    check(expected in body, f'{os.path.basename(target)}: IncludeOrderVersion is not {expected}')
+readme = open(os.path.join(ROOT, 'README.md')).read()
+check(f'UE_{TARGET_ENGINE}' in readme, f'README.md: build command does not reference UE_{TARGET_ENGINE}')
+check(f'**{TARGET_ENGINE}**' in readme, f'README.md: does not state {TARGET_ENGINE} as the required engine')
+# The classic input classes are pinned, since the project uses legacy mappings.
+input_ini = open(INI).read()
+check('DefaultPlayerInputClass=/Script/Engine.PlayerInput' in input_ini,
+      'DefaultInput.ini: classic PlayerInput class is not pinned')
+check('DefaultInputComponentClass=/Script/Engine.InputComponent' in input_ini,
+      'DefaultInput.ini: classic InputComponent class is not pinned')
+
 print(f'{checks} checks run')
 for error in errors:
     print('FAIL: ' + error)

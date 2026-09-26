@@ -109,24 +109,30 @@ void AParasitePlayerController::SetupInputComponent()
 	InputComponent->BindAction(TEXT("MenuClick"), IE_Pressed, this, &AParasitePlayerController::OnMenuClick);
 }
 
-#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6)
-bool AParasitePlayerController::InputKey(const FInputKeyEventArgs& Params)
-#else
-bool AParasitePlayerController::InputKey(const FInputKeyParams& Params)
-#endif
+void AParasitePlayerController::PollAddressTyping()
 {
-	// While the join address field is open, the keyboard belongs to it.
-	if (Params.Event == IE_Pressed)
+	AParasiteHUD* HUD = GetParasiteHUD();
+	if (!HUD || !HUD->bJoinEditing)
 	{
-		if (AParasiteHUD* HUD = GetParasiteHUD())
+		return;
+	}
+	// Only the handful of keys an address can contain. Polling rather than
+	// overriding InputKey keeps this working on every engine version, since that
+	// override's signature has changed between them.
+	static const FKey AddressKeys[] = {
+		EKeys::Zero, EKeys::One, EKeys::Two, EKeys::Three, EKeys::Four,
+		EKeys::Five, EKeys::Six, EKeys::Seven, EKeys::Eight, EKeys::Nine,
+		EKeys::NumPadZero, EKeys::NumPadOne, EKeys::NumPadTwo, EKeys::NumPadThree, EKeys::NumPadFour,
+		EKeys::NumPadFive, EKeys::NumPadSix, EKeys::NumPadSeven, EKeys::NumPadEight, EKeys::NumPadNine,
+		EKeys::Period, EKeys::Decimal, EKeys::Semicolon, EKeys::BackSpace, EKeys::Enter
+	};
+	for (const FKey& Key : AddressKeys)
+	{
+		if (WasInputKeyJustPressed(Key))
 		{
-			if (HUD->HandleTextInput(Params.Key))
-			{
-				return true;
-			}
+			HUD->HandleTextInput(Key);
 		}
 	}
-	return Super::InputKey(Params);
 }
 
 void AParasitePlayerController::OnMoveForward(float Value)
@@ -182,6 +188,8 @@ void AParasitePlayerController::PlayerTick(float DeltaTime)
 	{
 		return;
 	}
+	PollAddressTyping();
+
 	const bool bBlocked = IsInputBlocked();
 	const float Forward = bBlocked ? 0.f : CachedForward;
 	const float Right = bBlocked ? 0.f : CachedRight;

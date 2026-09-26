@@ -88,7 +88,7 @@ AParasiteCharacter::AParasiteCharacter()
 	Move->JumpZVelocity = 480.f;
 	Move->AirControl = 0.6f;
 	Move->GetNavAgentPropertiesRef().bCanCrouch = true;
-	Move->CrouchedHalfHeight = 22.f;
+	Move->SetCrouchedHalfHeight(22.f);
 }
 
 void AParasiteCharacter::BeginPlay()

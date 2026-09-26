@@ -3,7 +3,6 @@
 #include "CoreMinimal.h"
 #include "GameFramework/PlayerController.h"
 #include "ParasiteTypes.h"
-#include "Runtime/Launch/Resources/Version.h"
 #include "ParasitePlayerController.generated.h"
 
 class AParasiteCharacter;
@@ -27,12 +26,6 @@ public:
 	virtual void OnPossess(APawn* InPawn) override;
 	virtual void BeginPlay() override;
 	virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
-
-#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 6)
-	virtual bool InputKey(const FInputKeyEventArgs& Params) override;
-#else
-	virtual bool InputKey(const FInputKeyParams& Params) override;
-#endif
 
 	/** The player's own parasite body, kept alive while riding another host. */
 	UPROPERTY(Replicated, BlueprintReadOnly, Category = "Parasite")
@@ -130,6 +123,9 @@ protected:
 	void ServerHijackInput(float Forward, float Right, float YawDelta);
 
 private:
+	/** Feeds keystrokes into the join address field while it is open. */
+	void PollAddressTyping();
+
 	int32 SimPlayerId = -1;
 	float CachedForward = 0.f;
 	float CachedRight = 0.f;

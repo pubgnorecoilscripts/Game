@@ -28,8 +28,10 @@ python3 Tools/check_project.py # replication, input, RPC and asset wiring
 
 ## Requirements
 
-* Unreal Engine **5.3** (the one version-sensitive override,
-  `APlayerController::InputKey`, is guarded for 5.6+).
+* Unreal Engine **5.4** — targeted and configured for 5.4.x
+  (`"EngineAssociation": "5.4"` covers 5.4.4).
+  The code deliberately avoids engine APIs that moved between 5.x versions, so it
+  should build on 5.3 and 5.5+ as well.
 * No marketplace or project assets. Every mesh, material, light and sound is
   either engine basic content (`/Engine/BasicShapes`) or generated at runtime.
 
@@ -37,7 +39,7 @@ python3 Tools/check_project.py # replication, input, RPC and asset wiring
 
 ```
 # Windows
-"C:\Program Files\Epic Games\UE_5.3\Engine\Build\BatchFiles\Build.bat" ParasiteEditor Win64 Development -Project="%CD%\Parasite.uproject" -WaitMutex
+"C:\Program Files\Epic Games\UE_5.4\Engine\Build\BatchFiles\Build.bat" ParasiteEditor Win64 Development -Project="%CD%\Parasite.uproject" -WaitMutex
 
 # Linux / macOS
 "$UE_ROOT/Engine/Build/BatchFiles/Linux/Build.sh" ParasiteEditor Linux Development -Project="$PWD/Parasite.uproject"
