@@ -38,8 +38,11 @@ python3 Tools/check_project.py # replication, input, RPC and asset wiring
 ## Building
 
 ```
-# Windows
-"C:\Program Files\Epic Games\UE_5.4\Engine\Build\BatchFiles\Build.bat" ParasiteEditor Win64 Development -Project="%CD%\Parasite.uproject" -WaitMutex
+# Windows - builds, then prints the lines that explain any failure
+Tools\build_windows.bat
+
+# Windows, engine installed somewhere else
+Tools\build_windows.bat "D:\Epic\UE_5.4"
 
 # Linux / macOS
 "$UE_ROOT/Engine/Build/BatchFiles/Linux/Build.sh" ParasiteEditor Linux Development -Project="$PWD/Parasite.uproject"
