@@ -289,9 +289,9 @@ void AParasiteGameMode::PushWorldIntoSim()
 	{
 		if (const UPossessableComponent* Host = Pair.Value.Get())
 		{
-			if (const AActor* Owner = Host->GetOwner())
+			if (const AActor* HostActor = Host->GetOwner())
 			{
-				Sim.SetHostLocation(Pair.Key, ToCore(Owner->GetActorLocation()));
+				Sim.SetHostLocation(Pair.Key, ToCore(HostActor->GetActorLocation()));
 			}
 		}
 	}

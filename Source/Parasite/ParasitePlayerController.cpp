@@ -243,9 +243,9 @@ void AParasitePlayerController::OnJumpPressed()
 			Parasite->Jump();
 		}
 	}
-	else if (ACharacter* Character = Cast<ACharacter>(GetPawn()))
+	else if (ACharacter* HostCharacter = Cast<ACharacter>(GetPawn()))
 	{
-		Character->Jump();
+		HostCharacter->Jump();
 	}
 	else if (APossessablePawn* Prop = Cast<APossessablePawn>(GetPawn()))
 	{
@@ -255,9 +255,9 @@ void AParasitePlayerController::OnJumpPressed()
 
 void AParasitePlayerController::OnJumpReleased()
 {
-	if (ACharacter* Character = Cast<ACharacter>(GetPawn()))
+	if (ACharacter* HostCharacter = Cast<ACharacter>(GetPawn()))
 	{
-		Character->StopJumping();
+		HostCharacter->StopJumping();
 	}
 }
 
@@ -279,15 +279,15 @@ void AParasitePlayerController::OnSprintReleased()
 
 void AParasitePlayerController::OnCrouchToggle()
 {
-	if (ACharacter* Character = Cast<ACharacter>(GetPawn()))
+	if (ACharacter* HostCharacter = Cast<ACharacter>(GetPawn()))
 	{
-		if (Character->bIsCrouched)
+		if (HostCharacter->bIsCrouched)
 		{
-			Character->UnCrouch();
+			HostCharacter->UnCrouch();
 		}
 		else
 		{
-			Character->Crouch();
+			HostCharacter->Crouch();
 		}
 	}
 }

@@ -239,7 +239,102 @@ for cpp in sorted(glob.glob(os.path.join(SRC, '*.cpp'))):
             check(header in includes,
                   f'{os.path.basename(cpp)}: uses {pattern} but includes no "{header}"')
 
-# 12. The target engine version is stated consistently everywhere.
+# 12. No local or parameter shadows a class member. UnrealBuildTool treats
+#     shadowing as an error ("declaration of 'X' hides class member"), and the
+#     engine base classes carry members with very tempting names: AController
+#     has Character and Pawn, AActor has Owner, AHUD has Canvas. Core/ is left
+#     to the real compiler: Tests/run_tests.sh builds it with -Wshadow.
+ENGINE_MEMBERS = {
+    'AActor': {'Owner', 'Instigator', 'RootComponent', 'Children', 'Tags', 'InputComponent', 'Layers'},
+    'AController': {'Pawn', 'Character', 'PlayerState', 'StateName'},
+    'APlayerController': {'Player', 'PlayerInput', 'PlayerCameraManager', 'MyHUD', 'CheatManager',
+                          'AcknowledgedPawn', 'NetConnection'},
+    'APawn': {'Controller', 'PlayerState', 'ControlInputVector', 'LastControlInputVector'},
+    'ACharacter': {'Mesh', 'CharacterMovement', 'CapsuleComponent', 'bIsCrouched', 'JumpKeyHoldTime'},
+    'AHUD': {'Canvas', 'DebugCanvas', 'PlayerOwner', 'PostRenderedActors'},
+    'AGameModeBase': {'GameSession', 'GameState', 'GameStateClass', 'PlayerControllerClass',
+                      'DefaultPawnClass', 'HUDClass', 'PlayerStateClass'},
+    'AGameStateBase': {'PlayerArray', 'AuthorityGameMode', 'GameModeClass', 'SpectatorClass'},
+    'APlayerState': {'PlayerId', 'Score'},
+    'UActorComponent': {'PrimaryComponentTick'},
+}
+MEMBER_CHAIN = {
+    'APlayerController': ['APlayerController', 'AController', 'AActor'],
+    'ACharacter': ['ACharacter', 'APawn', 'AActor'],
+    'APawn': ['APawn', 'AActor'],
+    'AHUD': ['AHUD', 'AActor'],
+    'AGameModeBase': ['AGameModeBase', 'AActor'],
+    'AGameStateBase': ['AGameStateBase', 'AActor'],
+    'APlayerState': ['APlayerState', 'AActor'],
+    'AActor': ['AActor'],
+    'UActorComponent': ['UActorComponent'],
+    'UObject': [],
+}
+LOCAL_DECL = re.compile(
+    r'(?:^[ \t]*|\(\s*)(?:const\s+)?'
+    r'(?:[A-Z]\w*|int32|uint8|uint32|int16|float|bool|double|auto)'
+    r'(?:<[^;()]*?>)?(?:\s*\*|\s*&|\s)\s*\b([A-Za-z_]\w*)\s*(?:=(?!=)|:(?!:)|;)', re.M)
+MEMBER_DECL = re.compile(r'^\t(?!return\b)[\w:<>\*,\s]+?\b(\w+)\s*(?:=.*)?;\s*$', re.M)
+
+
+def brace_body(text, open_index):
+    """Returns the text between the brace at open_index and its partner."""
+    depth = 0
+    for index in range(open_index, len(text)):
+        if text[index] == '{':
+            depth += 1
+        elif text[index] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[open_index + 1:index]
+    return text[open_index + 1:]
+
+
+def classes_in(header_body):
+    """Maps each class or struct declared in a header to (parent, own members)."""
+    found = {}
+    for match in re.finditer(r'(?:class|struct)\s+(?:PARASITE_API\s+)?(\w+)\s*(?::\s*public\s+(\w+)[^{;]*)?\{',
+                             header_body):
+        body = brace_body(header_body, match.end() - 1)
+        found[match.group(1)] = (match.group(2), set(MEMBER_DECL.findall(body)))
+    return found
+
+
+# Every class the module declares, so a .cpp can check members of any of them.
+MODULE_CLASSES = {}
+for header in unreal_headers():
+    MODULE_CLASSES.update(classes_in(open(header).read()))
+
+
+def reserved_names(cls):
+    parent, own = MODULE_CLASSES.get(cls, (None, set()))
+    reserved = {name: f'{cls}::{name}' for name in own}
+    for ancestor in MEMBER_CHAIN.get(parent, []):
+        for member in ENGINE_MEMBERS.get(ancestor, ()):
+            reserved.setdefault(member, f'{ancestor}::{member}')
+    return reserved
+
+
+# A member function definition: starts at column 0, names Class::Method.
+DEFINITION = re.compile(r'^[\w:<>\*&\s]*?\b(\w+)::(~?\w+)\s*\(([^)]*)\)\s*(?:const\s*)?\n\{', re.M)
+for cpp in sorted(glob.glob(os.path.join(SRC, '*.cpp'))):
+    cpp_body = open(cpp).read()
+    for match in DEFINITION.finditer(cpp_body):
+        cls, method, params = match.group(1), match.group(2), match.group(3)
+        if cls not in MODULE_CLASSES:
+            continue
+        reserved = reserved_names(cls)
+        names = set(LOCAL_DECL.findall(brace_body(cpp_body, match.end() - 1)))
+        for param in filter(None, (piece.strip() for piece in params.split(','))):
+            param_name = re.search(r'(\w+)\s*$', param)
+            if param_name:
+                names.add(param_name.group(1))
+        for name in sorted(names):
+            check(name not in reserved,
+                  f'{os.path.basename(cpp)}: {cls}::{method} declares "{name}", which hides '
+                  f'{reserved.get(name)}; UBT treats shadowing as an error')
+
+# 13. The target engine version is stated consistently everywhere.
 TARGET_ENGINE = '5.4'
 uproject = open(os.path.join(ROOT, 'Parasite.uproject')).read()
 check(f'"EngineAssociation": "{TARGET_ENGINE}"' in uproject,
