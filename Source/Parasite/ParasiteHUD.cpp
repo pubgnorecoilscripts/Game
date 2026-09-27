@@ -10,6 +10,7 @@
 #include "Engine/Engine.h"
 #include "Engine/Font.h"
 #include "GameFramework/PlayerInput.h"
+#include "InputCoreTypes.h"
 
 namespace
 {

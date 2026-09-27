@@ -193,7 +193,53 @@ for header in unreal_headers():
     check('generated.h' in includes[-1],
           f'{os.path.basename(header)}: generated header is not the last include ({includes[-1]} follows it)')
 
-# 11. The target engine version is stated consistently everywhere.
+# 11. A .cpp that uses an engine symbol includes the header defining it.
+#     Headers are skipped on purpose: they use forward declarations. Curated to
+#     the symbols this project touches.
+ENGINE_SYMBOL_HEADERS = {
+    r'\bUGameplayStatics::':            'Kismet/GameplayStatics.h',
+    r'\bGEngine\b':                     'Engine/Engine.h',
+    r'\bTActorIterator<':               'EngineUtils.h',
+    r'\bUMaterialInstanceDynamic\b':    'Materials/MaterialInstanceDynamic.h',
+    r'\bConstructorHelpers::':          'UObject/ConstructorHelpers.h',
+    r'\bDOREPLIFETIME':                 'Net/UnrealNetwork.h',
+    r'\bUSpringArmComponent\b':         'GameFramework/SpringArmComponent.h',
+    r'\bUCameraComponent\b':            'Camera/CameraComponent.h',
+    r'\bUCharacterMovementComponent\b': 'GameFramework/CharacterMovementComponent.h',
+    r'GetCapsuleComponent\(\)':          'Components/CapsuleComponent.h',
+    r'\bUStaticMeshComponent\b':        'Components/StaticMeshComponent.h',
+    r'\bUPointLightComponent\b':        'Components/PointLightComponent.h',
+    r'\bUSphereComponent\b':            'Components/SphereComponent.h',
+    r'\bUFloatingPawnMovement\b':       'GameFramework/FloatingPawnMovement.h',
+    r'\bAAIController\b':               'AIController.h',
+    r'\bAPlayerStart\b':                'GameFramework/PlayerStart.h',
+    r'\bGameSession\b':                 'GameFramework/GameSession.h',
+    r'Canvas->':                         'Engine/Canvas.h',
+    r'->PlayerInput\b':                  'GameFramework/PlayerInput.h',
+    r'\bUSoundWaveProcedural\b':        'Sound/SoundWaveProcedural.h',
+    r'\bUAudioComponent\b':             'Components/AudioComponent.h',
+    r'GetTimerManager\(\)':              'TimerManager.h',
+    r'\bUDirectionalLightComponent\b':  'Components/DirectionalLightComponent.h',
+    r'\bUSkyLightComponent\b':          'Components/SkyLightComponent.h',
+    r'InputComponent->Bind':             'Components/InputComponent.h',
+    r'\bUStaticMesh\b(?!Component)':    'Engine/StaticMesh.h',
+    r'\bUMaterial\b(?!Instance)':       'Materials/Material.h',
+    r'TCHAR_TO_UTF8|UTF8_TO_TCHAR':      'Containers/StringConv.h',
+    r'\bEKeys::':                        'InputCoreTypes.h',
+    r'SpawnActor<|GetGameState<|GetPlayerControllerIterator': 'Engine/World.h',
+}
+for cpp in sorted(glob.glob(os.path.join(SRC, '*.cpp'))):
+    body = open(cpp).read()
+    includes = set(re.findall(r'#include\s+"(.+?)"', body))
+    paired = cpp[:-4] + '.h'
+    if os.path.exists(paired):
+        includes |= set(re.findall(r'#include\s+"(.+?)"', open(paired).read()))
+    for pattern, header in ENGINE_SYMBOL_HEADERS.items():
+        if re.search(pattern, body):
+            check(header in includes,
+                  f'{os.path.basename(cpp)}: uses {pattern} but includes no "{header}"')
+
+# 12. The target engine version is stated consistently everywhere.
 TARGET_ENGINE = '5.4'
 uproject = open(os.path.join(ROOT, 'Parasite.uproject')).read()
 check(f'"EngineAssociation": "{TARGET_ENGINE}"' in uproject,

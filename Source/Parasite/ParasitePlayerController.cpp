@@ -7,6 +7,7 @@
 #include "PossessablePawn.h"
 #include "ParasiteAudio.h"
 #include "Components/InputComponent.h"
+#include "InputCoreTypes.h"
 #include "Engine/World.h"
 #include "Net/UnrealNetwork.h"
 
