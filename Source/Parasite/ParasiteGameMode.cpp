@@ -373,8 +373,8 @@ void AParasiteGameMode::EnterHostInWorld(AParasitePlayerController* Controller, 
 
 		if (AParasitePlayerController* VictimPC = Cast<AParasitePlayerController>(Victim->GetController()))
 		{
-			VictimPC->ClientNotify(TEXT("!! SOMETHING IS INSIDE YOU - MASH [R] TO RESIST !!"), 4.f);
-			VictimPC->ClientPlaySound(static_cast<uint8>(EParasiteSound::Detected));
+			VictimPC->ClientShowNotice(TEXT("!! SOMETHING IS INSIDE YOU - MASH [R] TO RESIST !!"), 4.f);
+			VictimPC->ClientPlayCue(static_cast<uint8>(EParasiteSound::Detected));
 		}
 	}
 	else if (APawn* HostPawn = Cast<APawn>(HostActor))
@@ -392,8 +392,8 @@ void AParasiteGameMode::EnterHostInWorld(AParasitePlayerController* Controller, 
 		Controller->Possess(HostPawn);
 	}
 
-	Controller->ClientNotify(FString::Printf(TEXT("POSSESSED: %s"), *Host->HostDisplayName), 2.f);
-	Controller->ClientPlaySound(static_cast<uint8>(EParasiteSound::Possess));
+	Controller->ClientShowNotice(FString::Printf(TEXT("POSSESSED: %s"), *Host->HostDisplayName), 2.f);
+	Controller->ClientPlayCue(static_cast<uint8>(EParasiteSound::Possess));
 	FParasiteAudio::Play(this, EParasiteSound::Possess, HostActor->GetActorLocation());
 }
 
@@ -447,7 +447,7 @@ void AParasiteGameMode::ExitHostInWorld(AParasitePlayerController* Controller, U
 		Sim.SetPlayerLocation(Controller->GetSimPlayerId(), ToCore(WakeLocation));
 	}
 
-	Controller->ClientPlaySound(static_cast<uint8>(EParasiteSound::PossessExit));
+	Controller->ClientPlayCue(static_cast<uint8>(EParasiteSound::PossessExit));
 	if (IsValid(HostActor))
 	{
 		FParasiteAudio::Play(this, EParasiteSound::PossessExit, HostActor->GetActorLocation());
@@ -594,7 +594,7 @@ void AParasiteGameMode::BroadcastSound(EParasiteSound Sound)
 	{
 		if (AParasitePlayerController* PC = Cast<AParasitePlayerController>(It->Get()))
 		{
-			PC->ClientPlaySound(static_cast<uint8>(Sound));
+			PC->ClientPlayCue(static_cast<uint8>(Sound));
 		}
 	}
 }
@@ -613,8 +613,8 @@ void AParasiteGameMode::RequestPossess(AParasitePlayerController* Controller)
 	const Parasite::EPossessResult Result = Sim.TryPossessNearest(Controller->GetSimPlayerId(), Chosen);
 	if (Result != Parasite::EPossessResult::Success)
 	{
-		Controller->ClientNotify(UTF8_TO_TCHAR(Parasite::ToString(Result)), 1.5f);
-		Controller->ClientPlaySound(static_cast<uint8>(EParasiteSound::PossessFail));
+		Controller->ClientShowNotice(UTF8_TO_TCHAR(Parasite::ToString(Result)), 1.5f);
+		Controller->ClientPlayCue(static_cast<uint8>(EParasiteSound::PossessFail));
 		return;
 	}
 	ApplyPossessionChanges();
@@ -624,7 +624,7 @@ void AParasiteGameMode::RequestExit(AParasitePlayerController* Controller)
 {
 	if (Controller && Sim.ExitPossession(Controller->GetSimPlayerId(), false))
 	{
-		Controller->ClientNotify(TEXT("LEFT HOST"), 1.5f);
+		Controller->ClientShowNotice(TEXT("LEFT HOST"), 1.5f);
 		ApplyPossessionChanges();
 	}
 }
@@ -650,7 +650,7 @@ void AParasiteGameMode::RequestInteract(AParasitePlayerController* Controller)
 			if (APossessablePawn* Door = Cast<APossessablePawn>(Host->GetOwner()))
 			{
 				Door->ToggleHinge();
-				Controller->ClientNotify(TEXT("DOOR"), 1.f);
+				Controller->ClientShowNotice(TEXT("DOOR"), 1.f);
 				return;
 			}
 		}
@@ -667,12 +667,12 @@ void AParasiteGameMode::RequestScan(AParasitePlayerController* Controller)
 	std::vector<Parasite::HostId> Revealed;
 	if (!Sim.TryScan(Controller->GetSimPlayerId(), Revealed))
 	{
-		Controller->ClientNotify(TEXT("SCAN ON COOLDOWN"), 1.5f);
-		Controller->ClientPlaySound(static_cast<uint8>(EParasiteSound::PossessFail));
+		Controller->ClientShowNotice(TEXT("SCAN ON COOLDOWN"), 1.5f);
+		Controller->ClientPlayCue(static_cast<uint8>(EParasiteSound::PossessFail));
 		return;
 	}
 
-	Controller->ClientPlaySound(static_cast<uint8>(EParasiteSound::ScanPulse));
+	Controller->ClientPlayCue(static_cast<uint8>(EParasiteSound::ScanPulse));
 	FParasiteAudio::Play(this, EParasiteSound::ScanPulse, FromCore(Sim.GetPlayerPresence(Controller->GetSimPlayerId())));
 
 	for (Parasite::HostId Id : Revealed)
@@ -687,14 +687,14 @@ void AParasiteGameMode::RequestScan(AParasitePlayerController* Controller)
 		// The hunted feel the ping too. That is the whole mind game.
 		if (AParasitePlayerController* Prey = FindController(SimHost->Rider))
 		{
-			Prey->ClientNotify(TEXT("YOU WERE SCANNED"), 1.5f);
-			Prey->ClientPlaySound(static_cast<uint8>(EParasiteSound::Detected));
+			Prey->ClientShowNotice(TEXT("YOU WERE SCANNED"), 1.5f);
+			Prey->ClientPlayCue(static_cast<uint8>(EParasiteSound::Detected));
 		}
 	}
 	const FString Summary = Revealed.empty()
 		? FString(TEXT("SCAN: CLEAR"))
 		: FString::Printf(TEXT("SCAN: %d CONTACT(S)"), static_cast<int32>(Revealed.size()));
-	Controller->ClientNotify(Summary, 1.8f);
+	Controller->ClientShowNotice(Summary, 1.8f);
 }
 
 void AParasiteGameMode::RequestLeap(AParasitePlayerController* Controller, const FVector& Direction)
@@ -737,7 +737,7 @@ void AParasiteGameMode::RequestResist(AParasitePlayerController* Controller)
 	}
 	if (Sim.AddResist(Controller->GetSimPlayerId()))
 	{
-		Controller->ClientNotify(TEXT("YOU FORCED IT OUT"), 2.f);
+		Controller->ClientShowNotice(TEXT("YOU FORCED IT OUT"), 2.f);
 		ApplyPossessionChanges();
 	}
 }
@@ -749,8 +749,8 @@ void AParasiteGameMode::RequestUpgrade(AParasitePlayerController* Controller, EP
 		return;
 	}
 	const bool bBought = Sim.TryPurchaseUpgrade(Controller->GetSimPlayerId(), ToCore(Upgrade));
-	Controller->ClientNotify(bBought ? TEXT("EVOLVED") : TEXT("CANNOT EVOLVE (DNA / LIMIT)"), 2.f);
-	Controller->ClientPlaySound(static_cast<uint8>(bBought ? EParasiteSound::Possess : EParasiteSound::PossessFail));
+	Controller->ClientShowNotice(bBought ? TEXT("EVOLVED") : TEXT("CANNOT EVOLVE (DNA / LIMIT)"), 2.f);
+	Controller->ClientPlayCue(static_cast<uint8>(bBought ? EParasiteSound::Possess : EParasiteSound::PossessFail));
 }
 
 void AParasiteGameMode::RequestPing(AParasitePlayerController* Controller, const FVector& Location)
@@ -769,7 +769,7 @@ void AParasiteGameMode::RequestPing(AParasitePlayerController* Controller, const
 		if (OtherPS && OtherPS->Team == PS->Team)
 		{
 			Other->ClientAddMarker(Location, FColor(255, 220, 60), TEXT("PING"), 8.f);
-			Other->ClientPlaySound(static_cast<uint8>(EParasiteSound::UIClick));
+			Other->ClientPlayCue(static_cast<uint8>(EParasiteSound::UIClick));
 		}
 	}
 }

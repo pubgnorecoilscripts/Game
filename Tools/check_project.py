@@ -97,7 +97,79 @@ for ue_enum, core_enum in (('EHostMobility', 'EHostMobility'), ('EMatchPhase', '
     check(ue_values[:len(core_values)] == core_values,
           f'{ue_enum}: Unreal mirror does not match the core enum order ({ue_values} vs {core_values})')
 
-# 8. Reflected object pointers name a type the header actually declares.
+# 8. A UFUNCTION must not reuse a name the parent class already reflects: UHT
+#    rejects re-declaring an inherited UFUNCTION, which fails the whole build.
+#    Curated rather than exhaustive - it lists the engine reflected names a game
+#    class is plausibly tempted to reuse.
+ENGINE_UFUNCTIONS = {
+    'APlayerController': {
+        'ClientPlaySound', 'ClientPlaySoundAtLocation', 'ClientMessage', 'ClientTeamMessage',
+        'ClientReset', 'ClientRestart', 'ClientGameEnded', 'ClientWasKicked', 'ClientSetHUD',
+        'ClientSetViewTarget', 'ClientSetCameraMode', 'ClientSetCameraFade', 'ClientCapBandwidth',
+        'ClientPlayCameraShake', 'ClientStopCameraShake', 'ClientPlayForceFeedback',
+        'ClientStopForceFeedback', 'ClientReturnToMainMenu', 'ClientTravelInternal',
+        'ClientIgnoreMoveInput', 'ClientIgnoreLookInput', 'ClientGotoState', 'ClientPrestreamTextures',
+        'ClientEnableNetworkVoice', 'ClientMutePlayer', 'ClientUnmutePlayer', 'ClientRepObjRef',
+        'ServerPause', 'ServerRestartPlayer', 'ServerChangeName', 'ServerMutePlayer',
+        'ServerUnmutePlayer', 'ServerUpdateCamera', 'ServerCamera', 'ServerExec',
+        'ServerAcknowledgePossession', 'ServerVerifyViewTarget', 'ServerViewNextPlayer',
+        'ServerViewPrevPlayer', 'ServerViewSelf', 'ServerSetSpectatorWaiting',
+        'ServerNotifyLoadedWorld', 'ServerShortTimeout',
+        'SetPause', 'Possess', 'UnPossess', 'ConsoleCommand', 'GetHUD', 'SetViewTargetWithBlend',
+        'AddYawInput', 'AddPitchInput', 'AddRollInput', 'SetName',
+    },
+    'ACharacter': {
+        'Jump', 'StopJumping', 'Crouch', 'UnCrouch', 'CanJump', 'LaunchCharacter',
+        'ClientCheatWalk', 'ClientCheatFly', 'ClientCheatGhost', 'ClientAdjustPosition',
+        'ClientVeryShortAdjustPosition', 'ClientAckGoodMove', 'OnLanded',
+    },
+    'APawn': {
+        'AddMovementInput', 'AddControllerYawInput', 'AddControllerPitchInput',
+        'SpawnDefaultController', 'GetMovementComponent', 'IsMoveInputIgnored',
+    },
+    'AHUD': {
+        'DrawRect', 'DrawLine', 'DrawText', 'DrawTexture', 'DrawTextureSimple', 'DrawMaterial',
+        'DrawMaterialSimple', 'Project', 'Deproject', 'GetTextSize', 'AddHitBox',
+        'ShowHUD', 'ShowDebug', 'GetOwningPlayerController', 'GetOwningPawn',
+    },
+    'APlayerState': {'GetPlayerName', 'GetScore', 'GetPingInMilliseconds', 'OnRep_Score'},
+    'AGameStateBase': {'GetServerWorldTimeSeconds', 'HasBegunPlay', 'HasMatchStarted'},
+    'AActor': {
+        'Destroy', 'SetOwner', 'SetLifeSpan', 'SetActorHiddenInGame', 'SetActorTickEnabled',
+        'WasRecentlyRendered', 'SetReplicates', 'ForceNetUpdate',
+    },
+    'UActorComponent': {
+        'SetActive', 'ToggleActive', 'SetComponentTickEnabled', 'DestroyComponent',
+        'SetIsReplicated', 'ComponentHasTag',
+    },
+}
+# Walk our declared parents so a subclass inherits its whole chain's names.
+PARENT_CHAIN = {
+    'APlayerController': ['APlayerController', 'AActor'],
+    'ACharacter': ['ACharacter', 'APawn', 'AActor'],
+    'APawn': ['APawn', 'AActor'],
+    'AHUD': ['AHUD', 'AActor'],
+    'APlayerState': ['APlayerState', 'AActor'],
+    'AGameStateBase': ['AGameStateBase', 'AActor'],
+    'AGameModeBase': ['AActor'],
+    'AActor': ['AActor'],
+    'UActorComponent': ['UActorComponent'],
+}
+for header in unreal_headers():
+    body = open(header).read()
+    for cls, parent in re.findall(r'class PARASITE_API (\w+)\s*:\s*public\s+(\w+)', body):
+        reserved = set()
+        for ancestor in PARENT_CHAIN.get(parent, []):
+            reserved |= ENGINE_UFUNCTIONS.get(ancestor, set())
+        if not reserved:
+            continue
+        class_body = body[body.index(f'class PARASITE_API {cls}'):]
+        for fn in re.findall(r'UFUNCTION\([^)]*\)\s*\n\s*(?:virtual\s+)?[\w:<>\*&\s]+?\b(\w+)\s*\(', class_body):
+            check(fn not in reserved,
+                  f'{os.path.basename(header)}: {cls}::{fn} reuses a UFUNCTION name from {parent}; '
+                  f'UHT rejects re-declaring an inherited UFUNCTION')
+
+# 9. Reflected object pointers name a type the header actually declares.
 #    A missing forward declaration is a compile error UHT will not warn about.
 BASE_DECLARED = {
     # Provided by the engine headers these classes already inherit from.
@@ -112,7 +184,7 @@ for header in unreal_headers():
         check(pointee in declared or pointee in BASE_DECLARED,
               f'{os.path.basename(header)}: TObjectPtr<{pointee}> but "{pointee}" is never declared here')
 
-# 9. The generated header has to be the last include in a reflected header.
+# 10. The generated header has to be the last include in a reflected header.
 for header in unreal_headers():
     body = open(header).read()
     includes = re.findall(r'^#include\s+(".+?")', body, re.M)
@@ -121,7 +193,7 @@ for header in unreal_headers():
     check('generated.h' in includes[-1],
           f'{os.path.basename(header)}: generated header is not the last include ({includes[-1]} follows it)')
 
-# 10. The target engine version is stated consistently everywhere.
+# 11. The target engine version is stated consistently everywhere.
 TARGET_ENGINE = '5.4'
 uproject = open(os.path.join(ROOT, 'Parasite.uproject')).read()
 check(f'"EngineAssociation": "{TARGET_ENGINE}"' in uproject,

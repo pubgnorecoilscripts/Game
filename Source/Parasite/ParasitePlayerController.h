@@ -54,10 +54,10 @@ public:
 
 	// --- Client feedback -------------------------------------------------
 	UFUNCTION(Client, Reliable)
-	void ClientNotify(const FString& Message, float Duration);
+	void ClientShowNotice(const FString& Message, float Duration);
 
 	UFUNCTION(Client, Reliable)
-	void ClientPlaySound(uint8 Sound);
+	void ClientPlayCue(uint8 Sound);
 
 	UFUNCTION(Client, Reliable)
 	void ClientAddMarker(FVector Location, FColor Colour, const FString& Label, float Duration);

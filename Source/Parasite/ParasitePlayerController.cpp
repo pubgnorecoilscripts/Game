@@ -483,7 +483,7 @@ void AParasitePlayerController::ServerHijackInput_Implementation(float Forward, 
 // Client feedback
 // ---------------------------------------------------------------------------
 
-void AParasitePlayerController::ClientNotify_Implementation(const FString& Message, float Duration)
+void AParasitePlayerController::ClientShowNotice_Implementation(const FString& Message, float Duration)
 {
 	if (AParasiteHUD* HUD = GetParasiteHUD())
 	{
@@ -491,7 +491,7 @@ void AParasitePlayerController::ClientNotify_Implementation(const FString& Messa
 	}
 }
 
-void AParasitePlayerController::ClientPlaySound_Implementation(uint8 Sound)
+void AParasitePlayerController::ClientPlayCue_Implementation(uint8 Sound)
 {
 	FParasiteAudio::Play2D(this, static_cast<EParasiteSound>(Sound));
 }
